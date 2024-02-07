@@ -73,7 +73,7 @@ def read_image(file):
 			img = srgb_to_linear(img)
 	return img
 
-def write_image(file, img, quality=95):
+def write_image(file, img, quality=100):
 	if os.path.splitext(file)[1] == ".bin":
 		if img.shape[2] < 4:
 			img = np.dstack((img, np.ones([img.shape[0], img.shape[1], 4 - img.shape[2]])))
