@@ -235,8 +235,8 @@ if __name__ == "__main__":
 
         real_rate_byte = os.path.getsize(args.bitstream_path)
         real_rate_bpp = real_rate_byte * 8 / n_pixels
-        print(f'Real rate        [kBytes]: {real_rate_byte / 1000:9.3f}')
-        print(f'Real rate           [bpp]: {real_rate_bpp :9.3f}')
+        print(f'Real rate    [kBytes]: {real_rate_byte / 1000:9.3f}')
+        print(f'Real rate       [bpp]: {real_rate_bpp :9.3f}')
     
     print(f'Total encoding time elapsed {time.time() - start_time}')
 
@@ -250,5 +250,12 @@ if __name__ == "__main__":
             dec_img.detach().cpu().numpy())
         print("done.")
     print(f'Total decoding time elapsed {time.time() - start_time}')
+
+    # ===================================================================================================
+    encoding = tcnn.Encoding(n_input_dims=2, encoding_config=config["encoding"])
+    print(f"Encoding parameters: {sum(p.numel() for p in encoding.parameters())}")
+
+    network = tcnn.Network(n_input_dims=encoding.n_output_dims, n_output_dims=n_channels, network_config=config["network"])
+    print(f"Network parameters: {sum(p.numel() for p in network.parameters())}")
 
     tcnn.free_temporary_memory()

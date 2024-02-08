@@ -22,7 +22,7 @@ FIXED_POINT_FRACTIONAL_BITS = 6 # 8 works fine in pure int mode (ARMINT True).
                                 # that has less headroom (23-bit mantissa, not 32)
 FIXED_POINT_FRACTIONAL_MULT = 2 ** FIXED_POINT_FRACTIONAL_BITS
 
-_INPUT_ENCODING_TYPE = [
+_ENCODING_TYPE = [
     "Identity",
     "Frequency",
     "OneBlob",
@@ -45,7 +45,7 @@ _ACTIVATION_TYPE = [
 ]
 _NETWORK_TYPE = ["FullyFusedMLP", "CutlassMLP"]
 
-_TEMPLATE_INPUT_ENCODING_CONFIG = {
+_TEMPLATE_ENCODING_CONFIG = {
     "Identity": {
         "otype": "Identity",
         "scale": float,  # Scaling of each encoded dimension.

@@ -31,7 +31,7 @@ import os
 import struct
 from typing import Tuple, TypedDict
 from utils.misc import (
-    _INPUT_ENCODING_TYPE,
+    _ENCODING_TYPE,
     _GRID_TYPE,
     _INTERPOLATION_TYPE,
     _ACTIVATION_TYPE,
@@ -46,8 +46,8 @@ def write_encoding_config(config: dict):
     n_bytes_encoding = 0
     otype = config["otype"]
 
-    if otype in _INPUT_ENCODING_TYPE:
-        byte_to_write += _INPUT_ENCODING_TYPE.index(otype).to_bytes(1, byteorder="big", signed=False)
+    if otype in _ENCODING_TYPE:
+        byte_to_write += _ENCODING_TYPE.index(otype).to_bytes(1, byteorder="big", signed=False)
         n_bytes_encoding += 1
     else:
         raise RuntimeError(f"No such {otype} supported")
@@ -85,7 +85,7 @@ def read_encoding_config(bitstream: bytes) -> dict:
     config = {}
     ptr = 0
 
-    otype = _INPUT_ENCODING_TYPE[int.from_bytes(bitstream[ptr:ptr + 1], byteorder='big', signed=False)]
+    otype = _ENCODING_TYPE[int.from_bytes(bitstream[ptr:ptr + 1], byteorder='big', signed=False)]
     ptr += 1
     config["otype"] = otype
 
@@ -162,7 +162,7 @@ def read_network_config(bitstream: bytes) -> dict:
 class FrameHeader(TypedDict):
     n_bytes_header: int  # Number of bytes for the header
     img_size: Tuple[int, int, int]  # Format: (HWC)
-    input_encoding_configs: dict  # _INPUT_ENCODING_CONFIG
+    encoding_configs: dict  # _ENCODING_CONFIG
     network_configs: dict  # _NETWORK_CONFIG
     q_step_index_nn: int  # Index of the quantization step used for NN
     scale_index_nn: int  # Index of the scale used for entropy coding NN
@@ -283,7 +283,7 @@ def read_frame_header(header_bytes: bytes) -> FrameHeader:
     # Read encoding configuration
     n_bytes_encoding_config = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
     ptr += 1
-    input_encoding_configs = read_encoding_config(header_bytes[ptr:ptr + n_bytes_encoding_config])
+    encoding_configs = read_encoding_config(header_bytes[ptr:ptr + n_bytes_encoding_config])
     ptr += n_bytes_encoding_config
 
     # Read network configuration
@@ -308,7 +308,7 @@ def read_frame_header(header_bytes: bytes) -> FrameHeader:
     header: FrameHeader = {
         "n_bytes_header": n_bytes_header,
         "img_size": img_size,
-        "input_encoding_configs": input_encoding_configs,
+        "encoding_configs": encoding_configs,
         "network_configs": network_configs,
         "q_step_index_nn": q_step_index_nn,
         "scale_index_nn": scale_index_nn,

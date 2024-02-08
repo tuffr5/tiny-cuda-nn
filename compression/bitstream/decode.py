@@ -62,7 +62,7 @@ def decode_frame(
     model = QuantizableModule(
         n_input_dims=2,
         n_output_dims=header_info.get('img_size')[-1],
-        encoding_config=header_info.get('input_encoding_configs'),
+        encoding_config=header_info.get('encoding_configs'),
         network_config=header_info.get('network_configs')
     )
     # =========================== Decode the NNs ============================ #
