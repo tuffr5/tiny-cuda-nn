@@ -40,7 +40,7 @@ def write_image_imageio(img_file, img, quality):
 			img = img[:,:,:3]
 		kwargs["quality"] = quality
 		kwargs["subsampling"] = 0
-	imageio.imwrite(img_file, np.squeeze(img), **kwargs)
+	imageio.imwrite(img_file, img, **kwargs)
 
 def read_image_imageio(img_file):
 	img = imageio.imread(img_file)
@@ -73,7 +73,7 @@ def read_image(file):
 			img = srgb_to_linear(img)
 	return img
 
-def write_image(file, img, quality=100):
+def write_image(file, img, quality=95):
 	if os.path.splitext(file)[1] == ".bin":
 		if img.shape[2] < 4:
 			img = np.dstack((img, np.ones([img.shape[0], img.shape[1], 4 - img.shape[2]])))
