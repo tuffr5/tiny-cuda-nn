@@ -53,7 +53,7 @@ def compute_loss(output, targets):
 def get_args():
     parser = argparse.ArgumentParser(description="Image Encoding.")
 
-    parser.add_argument("image", nargs="?", default="data/images/kodim15.png", help="Image to match")
+    parser.add_argument("image", nargs="?", default="data/images/kodim04.png", help="Image to match")
     parser.add_argument("config", nargs="?", default="data/config_hash.json", help="JSON config for tiny-cuda-nn",)
     parser.add_argument("n_steps", nargs="?", type=int, default=1001, help="Number of training steps")
     parser.add_argument("bitstream_path", nargs="?", default="compression/results/bitstream.bin", help="path to bitstream file")
