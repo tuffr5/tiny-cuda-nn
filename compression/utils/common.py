@@ -57,7 +57,6 @@ def write_image(file, img, quality=100):
 			f.write(img.astype(np.float16).tobytes())
 	else:
 		if img.shape[2] == 4:
-			img = np.copy(img)
 			# Unmultiply alpha
 			img[...,0:3] = np.divide(img[...,0:3], img[...,3:4], out=np.zeros_like(img[...,0:3]), where=img[...,3:4] != 0)
 			img[...,0:3] = linear_to_srgb(img[...,0:3])

@@ -5,23 +5,10 @@ from typing import Tuple
 import torch
 
 from torch import Tensor
-import sys
 from bitstream.header import read_frame_header
 from bitstream.range_coder import RangeCoder
-from models.quant import QuantizableModule
+from models.network import NetwortwithInputEncoding
 from utils.misc import generate_input_grid, POSSIBLE_SCALE_NN, POSSIBLE_Q_STEP_NN
-
-
-try:
-    import tinycudann as tcnn
-except ImportError:
-    print("This sample requires the tiny-cuda-nn extension for PyTorch.")
-    print("You can install it by running:")
-    print("============================================================")
-    print("tiny-cuda-nn$ cd bindings/torch")
-    print("tiny-cuda-nn/bindings/torch$ python setup.py install")
-    print("============================================================")
-    sys.exit()
 
 
 @torch.no_grad()
@@ -59,7 +46,7 @@ def decode_frame(
     #   3. Send it to the requested device.
                 
     # initialize empty model
-    model = QuantizableModule(
+    model = NetwortwithInputEncoding(
         n_input_dims=2,
         n_output_dims=header_info.get('img_size')[-1],
         encoding_config=header_info.get('encoding_configs'),

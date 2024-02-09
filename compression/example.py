@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from bitstream.encode import encode_frame
 from bitstream.decode import decode_frame
-from models.quant import QuantizableModule
+from models.network import NetwortwithInputEncoding
 from utils.common import read_image, write_image
 from utils.misc import generate_input_grid
 
@@ -68,9 +68,8 @@ if __name__ == "__main__":
     start_time = time.time()
     print("===============================================================")
     print("This script is an image compression example using tiny_cuda_nn.")
-    print("===============================================================")
-
     print(f"Using PyTorch {torch.__version__} with CUDA {torch.version.cuda}")
+    print("===============================================================")
 
     device = torch.device("cuda")
     args = get_args()
@@ -83,7 +82,7 @@ if __name__ == "__main__":
     img_shape = (height, width, n_channels)
     n_pixels = height * width
 
-    model = QuantizableModule(n_input_dims=2,
+    model = NetwortwithInputEncoding(n_input_dims=2,
                               n_output_dims=n_channels,
                               encoding_config=config["encoding"],
                               network_config=config["network"]).to(device)
@@ -97,7 +96,7 @@ if __name__ == "__main__":
 
     path = f"compression/results/reference.jpg"
     print(f"Writing '{path}'... ", end="")
-    write_image(path, image(xy).reshape(img_shape).detach().cpu().numpy())
+    write_image(path, image(xy).clamp(0.0, 1.0).reshape(img_shape).detach().cpu().numpy())
     print("done.")
 
     prev_time = time.perf_counter()

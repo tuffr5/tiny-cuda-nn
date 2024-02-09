@@ -1,6 +1,5 @@
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
-import sys
 import copy
 import math
 import torch
@@ -8,49 +7,24 @@ from typing import Optional
 from torch import nn, Tensor
 from torch.distributions import Laplace
 
-from utils.misc import MAX_AC_MAX_VAL, MIN_SCALE_NN_WEIGHTS_BIAS, POSSIBLE_Q_STEP_NN
+from utils.misc import MAX_AC_MAX_VAL, MIN_SCALE_NN_WEIGHTS_BIAS
 
 
-try:
-    import tinycudann as tcnn
-except ImportError:
-    print("This sample requires the tiny-cuda-nn extension for PyTorch.")
-    print("You can install it by running:")
-    print("============================================================")
-    print("tiny-cuda-nn$ cd bindings/torch")
-    print("tiny-cuda-nn/bindings/torch$ python setup.py install")
-    print("============================================================")
-    sys.exit()
 
-
-class QuantizableModule(tcnn.NetworkWithInputEncoding):
+class QuantizableModule(nn.Module):
     """This class is **not** made to be instantiated. It is thought as an interface
     from which all the modules should inherit. It implements all the mechanism to
     quantize, entropy code and measure the rate of the Module.
     """
 
-    def __init__(
-        self,
-        n_input_dims: int,
-        n_output_dims: int,
-        encoding_config: dict,
-        network_config: dict,
-        possible_q_steps: Tensor = POSSIBLE_Q_STEP_NN,
-    ):
+    def __init__(self):
         """Instantiate a quantizable module with a list of available
         quantization steps.
-
-        Args:
-            possible_q_steps (Tensor): A list of the available quantization step for this module
+        
         """
-        super().__init__(
-            n_input_dims=n_input_dims,
-            n_output_dims=n_output_dims,
-            encoding_config=encoding_config,
-            network_config=network_config,
-        )
-        # List of the available quantization steps
-        self._POSSIBLE_Q_STEP = possible_q_steps
+        super().__init__()
+        # List of the available quantization steps (will be in the module class)
+        self._POSSIBLE_Q_STEP = None
 
         # Store the full precision here by calling self.save_full_precision_param()
         self._full_precision_param: Optional[Tensor] = None
