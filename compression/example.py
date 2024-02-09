@@ -1,45 +1,22 @@
-#!/usr/bin/env python3
-
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without modification, are permitted
-# provided that the following conditions are met:
-#     * Redistributions of source code must retain the above copyright notice, this list of
-#       conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright notice, this list of
-#       conditions and the following disclaimer in the documentation and/or other materials
-#       provided with the distribution.
-#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
-#       to endorse or promote products derived from this software without specific prior written
-#       permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
-# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
-# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
-# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
-# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-# @originalfile   mlp_learning_an_image_pytorch.py
-# @author Thomas Müller, NVIDIA
-
-# @current: encode.py
-# Adapted for image compression purpose by
+# Adapted from tiny-cuda-nn/examples/mlp_learning_an_image.py
+# for image compression purpose by
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
 import argparse
-import commentjson as json
-import numpy as np
 import os
 import sys
-import torch
 import time
-from utils.misc import generate_input_grid, FIXED_POINT_FRACTIONAL_MULT
-from models.quant import QuantizableModule
+
+import commentjson as json
+import torch
+import torch.nn.functional as F
+
 from bitstream.encode import encode_frame
 from bitstream.decode import decode_frame
+from models.quant import QuantizableModule
+from utils.common import read_image, write_image
+from utils.misc import generate_input_grid
+
 
 try:
     import tinycudann as tcnn
@@ -52,40 +29,33 @@ except ImportError:
     print("============================================================")
     sys.exit()
 
-SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts")
-sys.path.insert(0, SCRIPTS_DIR)
-
-from common import write_image, read_image
-
 
 class Image(torch.nn.Module):
     def __init__(self, filename, device):
         super(Image, self).__init__()
-        self.data = read_image(filename)
-        self.shape = self.data.shape
-        self.data = torch.from_numpy(self.data).float().to(device)
+        # Read the image data and convert it to a tensor
+        self.data = torch.from_numpy(read_image(filename)).float().to(device)
+        # Permute the dimensions and add a batch dimension
+        self.data = self.data.permute(2, 0, 1).unsqueeze_(0)
+        # Create a tensor representing the shape of the image
+        self.shape_tensor = torch.tensor([self.data.shape[-2], self.data.shape[-1]], device=device).float()
 
-    def forward(self, xs):
+    def forward(self, xs, mode='bilinear'):
         with torch.no_grad():
-            # Bilinearly filtered lookup from the image. Not super fast,
-            # but less than ~20% of the overall runtime of this example.
-            shape = self.shape
+            # Normalize xs to [-1, 1] and reshape it to match the expected input shape for grid_sample
+            xs = (2.0 * xs - 1.0).unsqueeze_(0).unsqueeze_(-2)
 
-            xs = xs * torch.tensor([shape[1], shape[0]], device=xs.device).float()
-            indices = xs.long()
-            lerp_weights = xs - indices.float()
+            # Use grid_sample to perform the bilinear interpolation
+            sampled = F.grid_sample(self.data, xs, mode=mode, padding_mode='border', align_corners=True)
 
-            x0 = indices[:, 0].clamp(min=0, max=shape[1] - 1)
-            y0 = indices[:, 1].clamp(min=0, max=shape[0] - 1)
-            x1 = (x0 + 1).clamp(max=shape[1] - 1)
-            y1 = (y0 + 1).clamp(max=shape[0] - 1)
+            # Remove the batch dimension and last dimension and permute the dimensions back to their original order
+            return sampled.squeeze_(0).squeeze_(-1).permute(1, 0)
+        
 
-            return (
-                self.data[y0, x0] * (1.0 - lerp_weights[:, 0:1]) * (1.0 - lerp_weights[:, 1:2])
-                + self.data[y0, x1] * lerp_weights[:, 0:1] * (1.0 - lerp_weights[:, 1:2])
-                + self.data[y1, x0] * (1.0 - lerp_weights[:, 0:1]) * lerp_weights[:, 1:2]
-                + self.data[y1, x1] * lerp_weights[:, 0:1] * lerp_weights[:, 1:2]
-            )
+def compute_loss(output, targets):
+    relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
+    return relative_l2_error.mean()
+        
 
 def get_args():
     parser = argparse.ArgumentParser(description="Image Encoding.")
@@ -103,14 +73,11 @@ def get_args():
 
 if __name__ == "__main__":
     start_time = time.time()
-    print("================================================================")
-    print("This script replicates the behavior of the native CUDA example  ")
-    print("mlp_learning_an_image.cu using tiny-cuda-nn's PyTorch extension.")
-    print("================================================================")
+    print("===============================================================")
+    print("This script is an image compression example using tiny_cuda_nn.")
+    print("===============================================================")
 
-    print(
-        f"Using PyTorch version {torch.__version__} with CUDA {torch.version.cuda}"
-    )
+    print(f"Using PyTorch {torch.__version__} with CUDA {torch.version.cuda}")
 
     device = torch.device("cuda")
     args = get_args()
@@ -119,7 +86,9 @@ if __name__ == "__main__":
         config = json.load(config_file)
 
     image = Image(args.image, device)
-    n_channels = image.data.shape[2]
+    n_channels, height, width = image.data.shape[1:]
+    img_shape = (height, width, n_channels)
+    n_pixels = height * width
 
     model = QuantizableModule(n_input_dims=2,
                               n_output_dims=n_channels,
@@ -141,9 +110,6 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
     # Variables for saving/displaying image results
-    resolution = image.data.shape[0:2]
-    n_pixels = np.prod(resolution)
-    img_shape = resolution + torch.Size([image.data.shape[2]])
     xy = generate_input_grid(img_shape, device)
 
     path = f"compression/results/reference.jpg"
@@ -171,9 +137,7 @@ if __name__ == "__main__":
         targets = traced_image(batch)
 
         output = model(batch)
-
-        relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
-        loss = relative_l2_error.mean()
+        loss = compute_loss(output, targets)
 
         optimizer.zero_grad()
         loss.backward()
