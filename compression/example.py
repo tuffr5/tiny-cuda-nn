@@ -31,25 +31,18 @@ except ImportError:
 
 
 class Image(torch.nn.Module):
+    @torch.no_grad()
     def __init__(self, filename, device):
         super(Image, self).__init__()
-        # Read the image data and convert it to a tensor
         self.data = torch.from_numpy(read_image(filename)).float().to(device)
-        # Permute the dimensions and add a batch dimension
         self.data = self.data.permute(2, 0, 1).unsqueeze_(0)
-        # Create a tensor representing the shape of the image
         self.shape_tensor = torch.tensor([self.data.shape[-2], self.data.shape[-1]], device=device).float()
 
-    def forward(self, xs, mode='bilinear'):
-        with torch.no_grad():
-            # Normalize xs to [-1, 1] and reshape it to match the expected input shape for grid_sample
-            xs = (2.0 * xs - 1.0).unsqueeze_(0).unsqueeze_(-2)
-
-            # Use grid_sample to perform the bilinear interpolation
-            sampled = F.grid_sample(self.data, xs, mode=mode, padding_mode='border', align_corners=True)
-
-            # Remove the batch dimension and last dimension and permute the dimensions back to their original order
-            return sampled.squeeze_(0).squeeze_(-1).permute(1, 0)
+    @torch.no_grad()
+    def forward(self, xs, mode='bicubic'):
+        xs = (2.0 * xs - 1.0).unsqueeze_(0).unsqueeze_(-2)
+        sampled = F.grid_sample(self.data, xs, mode=mode, padding_mode='border', align_corners=True)
+        return sampled.squeeze_(0).squeeze_(-1).permute(1, 0)
         
 
 def compute_loss(output, targets):
@@ -60,7 +53,7 @@ def compute_loss(output, targets):
 def get_args():
     parser = argparse.ArgumentParser(description="Image Encoding.")
 
-    parser.add_argument("image", nargs="?", default="data/images/kodim04.png", help="Image to match")
+    parser.add_argument("image", nargs="?", default="data/images/kodim15.png", help="Image to match")
     parser.add_argument("config", nargs="?", default="data/config_hash.json", help="JSON config for tiny-cuda-nn",)
     parser.add_argument("n_steps", nargs="?", type=int, default=1001, help="Number of training steps")
     parser.add_argument("bitstream_path", nargs="?", default="compression/results/bitstream.bin", help="path to bitstream file")
@@ -96,20 +89,10 @@ if __name__ == "__main__":
                               network_config=config["network"]).to(device)
     print(model)
 
-    # Count the number of parameters.param
     print(f"Total number of parameters: {sum(p.numel() for p in model.parameters())}")
-
-    # ===================================================================================================
-    # The following is equivalent to the above, but slower. Only use "naked" tcnn.Encoding and
-    # tcnn.Network when you don't want to combine them. Otherwise, use tcnn.NetworkWithInputEncoding.
-    # ===================================================================================================
-    # encoding = tcnn.Encoding(n_input_dims=2, encoding_config=config["encoding"])
-    # network = tcnn.Network(n_input_dims=encoding.n_output_dims, n_output_dims=n_channels, network_config=config["network"])
-    # model = torch.nn.Sequential(encoding, network)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    # Variables for saving/displaying image results
     xy = generate_input_grid(img_shape, device)
 
     path = f"compression/results/reference.jpg"
@@ -215,11 +198,5 @@ if __name__ == "__main__":
         print("done.")
     print(f'Total decoding time elapsed {time.time() - start_time}')
 
-    # ===================================================================================================
-    encoding = tcnn.Encoding(n_input_dims=2, encoding_config=config["encoding"])
-    print(f"Encoding parameters: {sum(p.numel() for p in encoding.parameters())}")
-
-    network = tcnn.Network(n_input_dims=encoding.n_output_dims, n_output_dims=n_channels, network_config=config["network"])
-    print(f"Network parameters: {sum(p.numel() for p in network.parameters())}")
-
+    # clean up
     tcnn.free_temporary_memory()
