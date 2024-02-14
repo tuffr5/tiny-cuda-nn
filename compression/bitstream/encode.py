@@ -47,13 +47,14 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         
         mu_i = model._mu[i]
         scale_i = model._scale[i]
+        q_scale_i = param_quant_i.std() / scale_i
         param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(0, AC_MAX_VAL)
         cur_bitstream_path = f'{bitstream_path}_{i}'
         range_coder.encode(
             cur_bitstream_path,
             param_quant_i,
-            torch.zeros(pp_i),
-            torch.ones(pp_i)
+            mu_i * torch.ones(pp_i),
+            q_scale_i * torch.ones(pp_i)
         )
 
         n_bytes_i = os.path.getsize(cur_bitstream_path)
@@ -64,7 +65,7 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         # hack to encode 65536 to 0
         pp_i = 0 if pp_i == MAX_PARAM_SHAPE else pp_i
         n_bytes_i = 0 if n_bytes_i == limitation else n_bytes_i
-        shape_mu_scale_and_n_bytes.append((pp_i, mu_i.item(), scale_i.item(), n_bytes_i))
+        shape_mu_scale_and_n_bytes.append((pp_i, mu_i.item(), scale_i.item(), q_scale_i.item(), n_bytes_i))
 
     # Write the header
     header_path = f'{bitstream_path}_header'

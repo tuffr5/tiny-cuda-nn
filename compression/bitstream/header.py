@@ -22,21 +22,25 @@ Header for the image compressed bitstream:
     [param shape for level 0]                       2 bytes (less than MAX_PARAM_SHAPE)
     [mu for level 0]                                1 byte
     [scale for level 0]                             4 bytes (float)
+    [scale for quantized level 0]                   4 bytes (float)
     [Number of bytes used for level 0]              3 bytes (less than MAX_NN_BYTES)
     ...
     [param shape for level N - 1]                   2 bytes
-    [mu for level N - ]                             1 byte
-    [scale for level N - ]                          4 bytes (float)
+    [mu for level N - 1]                            1 byte
+    [scale for level N - 1]                         4 bytes (float)
+    [scale for quantized level N - 1]               4 bytes (float)
     [Number of bytes used for level N - 1]          3 bytes
     # ======================== NETWORK STUFF ======================== #
     [param shape for layer 0]                       2 bytes (less than MAX_PARAM_SHAPE)
     [mu for layer 0]                                1 bytes
     [scale for layer 0]                             4 bytes (float)
+    [scale for quantized layer 0]                   4 bytes (float)
     [Number of bytes used for layer 0]              2 bytes (less than MAX_NN_BYTES)
     ...
     [param shape for layer M - 1]                   2 bytes
     [mu for layer M - 1]                            1 bytes
     [scale for layer M - 1]                         4 bytes (float)
+    [scale for quantized layer M - 1]               4 bytes (float)
     [Number of bytes used for layer M - 1]          2 bytes 
     ? ======================== FRAME HEADER ======================== ?
 
@@ -209,7 +213,7 @@ def write_frame_header(
     n_bytes_header += n_bytes_network_config
 
     for i in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
-        n_bytes_header += 10 if i < get_num_levels(config["encoding"]) else 9
+        n_bytes_header += 14 if i < get_num_levels(config["encoding"]) else 13
 
     byte_to_write = b""
     byte_to_write += n_bytes_header.to_bytes(2, byteorder="big", signed=False)
@@ -223,10 +227,11 @@ def write_frame_header(
     byte_to_write += n_bytes_network_config.to_bytes(1, byteorder="big", signed=False)
     byte_to_write += tmp_byte_network
 
-    for i, (shape_i, mu_i, scale_i, n_bytes_i) in enumerate(shape_mu_scale_and_n_bytes):
+    for i, (shape_i, mu_i, scale_i, q_scale_i, n_bytes_i) in enumerate(shape_mu_scale_and_n_bytes):
         byte_to_write += shape_i.to_bytes(2, byteorder="big", signed=False)
         byte_to_write += int(mu_i).to_bytes(1, byteorder="big", signed=False)
         byte_to_write += struct.pack("f", scale_i)
+        byte_to_write += struct.pack("f", q_scale_i)
         if i < get_num_levels(config["encoding"]):
             byte_to_write += n_bytes_i.to_bytes(3, byteorder="big", signed=False)
         else:
@@ -286,13 +291,15 @@ def read_frame_header(header_bytes: bytes) -> FrameHeader:
         ptr += 1
         scale_i = struct.unpack_from("f", header_bytes, ptr)[0]
         ptr += 4
+        q_scale_i = struct.unpack_from("f", header_bytes, ptr)[0]
+        ptr += 4
         if i < get_num_levels(encoding_configs):
             n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 3], byteorder='big', signed=False)
             ptr += 3
         else:
             n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
             ptr += 2
-        shape_mu_scale_and_n_bytes.append([shape_i, mu_i, scale_i, n_bytes_i])
+        shape_mu_scale_and_n_bytes.append([shape_i, mu_i, scale_i, q_scale_i, n_bytes_i])
 
     header: FrameHeader = {
         "n_bytes_header": n_bytes_header,

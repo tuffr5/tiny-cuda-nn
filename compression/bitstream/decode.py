@@ -1,7 +1,6 @@
 # Adapted from Cool-Chic <https://github.com/Orange-OpenSource/Cool-Chic>
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
-import math
 import torch
 from typing import Tuple
 
@@ -62,15 +61,15 @@ def decode_frame(
     # =========================== Decode the encoding and network ============ #
     params = []
     range_coder = RangeCoder(AC_MAX_VAL = AC_MAX_VAL)
-    for i, (shape_i, mu_i, scale_i, n_bytes_i) in enumerate(header_info.get("shape_mu_scale_and_n_bytes")):
+    for i, (shape_i, mu_i, scale_i, q_scale_i, n_bytes_i) in enumerate(header_info.get("shape_mu_scale_and_n_bytes")):
         # hack back
         shape_i = MAX_PARAM_SHAPE if shape_i == 0 else shape_i
         limitation = MAX_HASH_LEVEL_BYTES if i < get_num_levels(header_info.get('encoding_configs')) else MAX_NN_BYTES
         n_bytes_i = limitation if n_bytes_i == 0 else n_bytes_i
         range_coder.load_bitstream(bitstream[:n_bytes_i])
-        model_param_quant_i = range_coder.decode(torch.zeros(shape_i), torch.ones(shape_i))
-        model_param_quant_i = (model_param_quant_i - mu_i) * scale_i 
-        params.append(model_param_quant_i)
+        param_quant_i = range_coder.decode(mu_i * torch.ones(shape_i), q_scale_i * torch.ones(shape_i))
+        param_quant_i = (param_quant_i - mu_i) * scale_i 
+        params.append(param_quant_i)
         bitstream = bitstream[n_bytes_i:]
 
     model.set_param(torch.cat(params).flatten())
