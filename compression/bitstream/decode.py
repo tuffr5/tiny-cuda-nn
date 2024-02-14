@@ -11,7 +11,7 @@ from bitstream.range_coder import RangeCoder
 from models.network import QuantizableNetworkWithInputEncoding
 from utils.misc import (
     generate_input_grid, 
-    MAX_AC_MAX_VAL, 
+    AC_MAX_VAL, 
     MAX_HASH_LEVEL_BYTES,
     MAX_NN_BYTES, 
     MAX_PARAM_SHAPE,
@@ -61,7 +61,7 @@ def decode_frame(
     )
     # =========================== Decode the encoding and network ============ #
     params = []
-    range_coder = RangeCoder(AC_MAX_VAL = MAX_AC_MAX_VAL)
+    range_coder = RangeCoder(AC_MAX_VAL = AC_MAX_VAL)
     for i, (shape_i, mu_i, scale_i, n_bytes_i) in enumerate(header_info.get("shape_mu_scale_and_n_bytes")):
         # hack back
         shape_i = MAX_PARAM_SHAPE if shape_i == 0 else shape_i

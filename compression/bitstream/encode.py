@@ -14,7 +14,7 @@ from utils.misc import (
     get_num_levels, 
     MAX_HASH_LEVEL_BYTES,
     MAX_NN_BYTES, 
-    MAX_AC_MAX_VAL, 
+    AC_MAX_VAL, 
     MAX_PARAM_SHAPE
     )
 
@@ -37,7 +37,7 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
 
     # ================= Encode encoding and network params into a bitstream file ================ #
     shape_mu_scale_and_n_bytes = []
-    range_coder = RangeCoder(AC_MAX_VAL=MAX_AC_MAX_VAL)
+    range_coder = RangeCoder(AC_MAX_VAL=AC_MAX_VAL)
     for i, pp_i, param_quant_i in zip(range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])), 
                                       model.param_counts_per_level, 
                                       model.fragment_param(model.get_param())):
@@ -47,7 +47,8 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         
         mu_i = model._mu[i]
         scale_i = model._scale[i]
-        param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(-MAX_AC_MAX_VAL, MAX_AC_MAX_VAL+1)
+        param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(0, AC_MAX_VAL)
+        print(f"param_quant_i: {torch.unique(param_quant_i)}")
         cur_bitstream_path = f'{bitstream_path}_{i}'
         range_coder.encode(
             cur_bitstream_path,

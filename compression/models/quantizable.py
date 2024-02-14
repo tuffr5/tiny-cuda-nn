@@ -6,7 +6,7 @@ import torch
 from typing import Optional
 from torch import nn, Tensor
 from torch.distributions import Laplace
-from utils.misc import MAX_AC_MAX_VAL
+from utils.misc import AC_MAX_VAL
 
 
 def round_ste(x: torch.Tensor):
@@ -37,9 +37,10 @@ class QuantizableModule(nn.Module):
             params = self.fragment_param(params)
             p_max = torch.tensor([p.abs().max() for p in params])
             p_min = torch.tensor([-p.abs().max() if p.min() < 0 else 0 for p in params])
-            self._scale = nn.Parameter((p_max - p_min) / (MAX_AC_MAX_VAL + 1), requires_grad=True)
+            self._scale = nn.Parameter((p_max - p_min) / AC_MAX_VAL, requires_grad=True)
             self._mu = -p_min / torch.max(self._scale.detach(), torch.tensor(1e-5))
             self._mu = self._mu.round_()
+            print(f"mu: {self._mu}")
         else:
             self._mu = torch.zeros(len(self.param_partitions))
             self._scale = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=True)
@@ -93,15 +94,8 @@ class QuantizableModule(nn.Module):
         fp_param = self.fragment_param(fp_param.detach())
         params = []
         for p, mu, scale in zip(fp_param, self._mu, self._scale):
-            # print(f"fp: {torch.mean(p)}, {torch.std(p)}, {torch.amax(p)}, {torch.amin(p)}")
-            # print(f"[Before]mu: {torch.amax(mu)}, scale: {torch.amax(scale)}")
-            # print(f"[Before]mu: {torch.amin(mu)}, scale: {torch.amin(scale)}")
-            # scale = scale * 1.0 / math.sqrt(p.numel() * MAX_AC_MAX_VAL)
-            sent_param = (round_ste(p / scale) + mu).clamp(-MAX_AC_MAX_VAL, MAX_AC_MAX_VAL + 1)
+            sent_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
             sent_param = (sent_param - mu) * scale
-
-            # print(f"[After]mu: {torch.amax(mu)}, scale: {torch.amax(scale)}, sent_param: {torch.amax(sent_param)}")
-            # print(f"[After]mu: {torch.amin(mu)}, scale: {torch.amin(scale)}, sent_param: {torch.amin(sent_param)}")
 
             params.append(sent_param)
         
