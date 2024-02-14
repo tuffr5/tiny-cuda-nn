@@ -6,124 +6,104 @@ import torch
 from typing import Optional
 from torch import nn, Tensor
 from torch.distributions import Laplace
+from utils.misc import MAX_AC_MAX_VAL
 
-from utils.misc import MAX_AC_MAX_VAL, MIN_SCALE_NN_WEIGHTS_BIAS
 
+def round_ste(x: torch.Tensor):
+    """
+    Implement Straight-Through Estimator for rounding operation.
+    """
+    return (x.round() - x).detach() + x
 
 
 class QuantizableModule(nn.Module):
-    """This class is **not** made to be instantiated. It is thought as an interface
-    from which all the modules should inherit. It implements all the mechanism to
-    quantize, entropy code and measure the rate of the Module.
-    """
-
+    """Base class for quantizable modules. It provides the basic functionalities."""
     def __init__(self):
-        """Instantiate a quantizable module with a list of available
-        quantization steps.
-        
-        """
         super().__init__()
-        # List of the available quantization steps (will be in the module class)
-        self._POSSIBLE_Q_STEP = None
 
-        # Store the full precision here by calling self.save_full_precision_param()
-        self._full_precision_param: Optional[Tensor] = None
+        self.net = None
+        self._full_precision_param: Optional[list] = None
+        self._quantized_precision_param: Optional[list] = None
+        
+        # quantization parameters for each level
+        self._mu = None
+        self._scale: Optional[nn.ParameterList] = None
 
-        # Store the quantization step info for the weight and biases
-        self._q_step: Optional[int] = None
+        self.param_partitions: Optional[list] = None
+
+    def init_quant_params(self, params: Optional[list] = None):
+        assert self.param_partitions is not None, 'You must initialize the parameter partitions before initializing the quantization parameters.'
+        if params is not None:
+            params = self.fragment_param(params)
+            self._scale = nn.Parameter(torch.tensor([2 * p.abs().max() / MAX_AC_MAX_VAL for p in params]), requires_grad=True)
+            self._mu = torch.tensor([-p.min() for p in params]) / torch.max(self._scale.detach(), torch.tensor(1e-5))
+            self._mu = torch.max(self._mu.round_(), torch.tensor(0.))
+        else:
+            self._mu = torch.zeros(len(self.param_partitions))
+            self._scale = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=True)
 
     def get_param(self) -> Tensor:
-        """Return the weights and biases **currently** inside the Linear modules.
-        """
-        return self.params
+        return self.net.params
 
     def set_param(self, param: Tensor):
-        """Set the current parameters of the ARM.
-
-        Args:
-            param (OrderedDict[str, Tensor]): Parameters to be set.
-        """
-        self.params.copy_(param)
+        self.net.params.copy_(param)
+    
+    def fragment_param(self, param: Tensor) -> list[Tensor]:
+        return torch.tensor_split(param, self.param_partitions)
 
     def save_full_precision_param(self):
-        """Store the full precision parameters inside an internal attribute
-            self._full_precision_param.
-        The current parameters **must** be the full precision parameters.
-        """
         self._full_precision_param = copy.deepcopy(self.get_param())
 
     def get_full_precision_param(self) -> Tensor:
-        """Return the **already saved** full precision parameters.
-        They must have been saved with self.save_full_precision_param() beforehand!
-
-        Returns:
-            Tensor: The full precision parameters if available,
-                None otherwise.
-        """
         return self._full_precision_param
+    
+    def save_quantized_precision_param(self, param: Tensor):
+        self._quantized_precision_param = param
 
-    def save_q_step(self, q_step: int):
-        """Save a quantization step into an internal attribute self._q_step."""
-        self._q_step = q_step
+    def get_quantized_precision_param(self) -> Tensor:    
+        return self._quantized_precision_param
 
-    def get_q_step(self) -> Optional[int]:
-        """Return the quantization used to go from self._full_precision_param to the
-        current parameters.
+    def measure_laplace_rate(self) -> float:     
+        rate_param = 0.
 
-        Returns:
-            The quantization step which has been used.
-        """
-        return self._q_step
-
-    def measure_laplace_rate(self) -> float:
-        """Get the rate associated with the current parameters.
-        # ! No back propagation is possible in this method as we work with float,
-        # ! not with tensor.
-        """
-        sent_param: []
-        rate_param: 0.
-
-        # We don't have a quantization step loaded which means that the parameters are
-        # not yet quantized. Return zero rate.
-        if self.get_q_step() is None:
+        if self._mu is None or self._scale is None:
             return rate_param
+        
+        param = self.fragment_param(self.get_param())  
+        for p, mu, scale in zip(param, self._mu, self._scale):
+            sent_param = (p - mu) / scale
 
-        # Quantization is round(parameter_value / q_step) * q_step
-        sent_param = (self.get_param() / self.get_q_step())
+            # compute their entropy.
+            distrib = Laplace(0., max(sent_param.std() / math.sqrt(2), 1.0e-3))
+            # No value can cost more than 32 bits
+            proba = torch.clamp(distrib.cdf(sent_param + 0.5) - distrib.cdf(sent_param - 0.5), min=2 ** -32, max=None)
 
-        # compute their entropy.
-        distrib = Laplace(0., max(sent_param.std().item() / math.sqrt(2), MIN_SCALE_NN_WEIGHTS_BIAS))
-        # No value can cost more than 32 bits
-        proba = torch.clamp(distrib.cdf(sent_param + 0.5) - distrib.cdf(sent_param - 0.5), min=2 ** -32, max=None)
-
-        rate_param = -torch.log2(proba).sum().item()
-
+            rate_param += -torch.log2(proba).sum()
+            
         return rate_param
 
-    def quantize(self, q_step) -> bool:
-        """Quantize **in place** the model with a given quantization step q_step.
-        The current model parameters are replaced by the quantized one.
-
-        This methods save the q_step parameter as an attribute of the class
-
-        Args:
-            q_step: quantization step
-
-        Return:
-            bool: True if everything went well, False otherwise
-        """
+    def quantize(self):
         fp_param = self.get_full_precision_param()
 
         assert fp_param is not None, 'You must save the full precision parameters '\
             'before quantizing the model. Use model.save_full_precision_param().'
+        
+        fp_param = self.fragment_param(fp_param.detach())
+        params = []
+        for p, mu, scale in zip(fp_param, self._mu, self._scale):
+            # print(f"fp: {torch.mean(p)}, {torch.std(p)}, {torch.amax(p)}, {torch.amin(p)}")
+            # print(f"[Before]mu: {torch.amax(mu)}, scale: {torch.amax(scale)}")
+            # print(f"[Before]mu: {torch.amin(mu)}, scale: {torch.amin(scale)}")
+            # scale = scale * 1.0 / math.sqrt(p.numel() * MAX_AC_MAX_VAL)
+            sent_param = (round_ste(p / scale) + mu).clamp(-MAX_AC_MAX_VAL-1, MAX_AC_MAX_VAL)
+            sent_param = (sent_param - mu) * scale
 
-        self.save_q_step(q_step)
-        sent_param = torch.round(fp_param / self.get_q_step())
-        if sent_param.abs().max() > MAX_AC_MAX_VAL:
-            print(f'Sent param exceed MAX_AC_MAX_VAL! Q step {self.get_q_step()} too small.')
-            return False
+            # print(f"[After]mu: {torch.amax(mu)}, scale: {torch.amax(scale)}, sent_param: {torch.amax(sent_param)}")
+            # print(f"[After]mu: {torch.amin(mu)}, scale: {torch.amin(scale)}, sent_param: {torch.amin(sent_param)}")
 
-        q_param = sent_param * self.get_q_step()
-        self.set_param(q_param)
-
-        return True
+            params.append(sent_param)
+        
+        self.save_quantized_precision_param(torch.cat(params).flatten())
+    
+    def forward(self, x: Tensor) -> Tensor:
+        return self.net(x)

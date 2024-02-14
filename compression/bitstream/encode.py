@@ -1,16 +1,22 @@
 # Adapted from Cool-Chic <https://github.com/Orange-OpenSource/Cool-Chic>
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
-import math
 import os
 import subprocess
 import torch
+import math
 
 from bitstream.header import write_frame_header
 from bitstream.range_coder import RangeCoder
 from typing import Tuple
-
-from utils.misc import POSSIBLE_Q_STEP_NN, POSSIBLE_SCALE_NN
+from utils.misc import (
+    get_num_layers, 
+    get_num_levels, 
+    MAX_NN_BYTES, 
+    MAX_AC_MAX_VAL, 
+    MAX_PARAM_SHAPE,
+    QUANT_BITDEPTH
+    )
 
 
 @torch.no_grad()
@@ -29,44 +35,39 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
 
     subprocess.call(f'rm -f {bitstream_path}', shell=True)
 
-    # ================= Encode the MLP into a bitstream file ================ #
-    q_step_index_nn = int(torch.argmin((POSSIBLE_Q_STEP_NN - model.get_q_step()).abs()).item())
+    # ================= Encode encoding and network params into a bitstream file ================ #
+    shape_mu_scale_and_n_bytes = []
+    range_coder = RangeCoder(AC_MAX_VAL=MAX_AC_MAX_VAL)
+    for i, pp_i, param_quant_i in zip(range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])), 
+                                      model.param_counts_per_level, 
+                                      model.fragment_param(model.get_param())):
+        if pp_i > MAX_PARAM_SHAPE:
+            raise ValueError(f"Found param shape {pp_i} exceeds the maximum allowed {MAX_PARAM_SHAPE}")
+        
+        mu_i = model._mu[i]
+        scale_i = model._scale[i]
+        param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(-MAX_AC_MAX_VAL-1, MAX_AC_MAX_VAL)
+        cur_bitstream_path = f'{bitstream_path}_{i}'
+        range_coder.encode(
+            cur_bitstream_path,
+            param_quant_i,
+            torch.zeros(pp_i),
+            torch.ones(pp_i)
+        )
 
-    # Quantize the weight with the actual quantization step
-    model_param_quant = torch.round(model.params / POSSIBLE_Q_STEP_NN[q_step_index_nn])
+        n_bytes_i = os.path.getsize(cur_bitstream_path)
+        if n_bytes_i > MAX_NN_BYTES:
+            raise ValueError(f"Found number of bytes {n_bytes_i} exceeds the maximum allowed {MAX_NN_BYTES}")
+        
+        shape_mu_scale_and_n_bytes.append((pp_i, mu_i.item(), scale_i.item(), n_bytes_i))
 
-    # Compute AC_MAX_VAL.
-    ac_max_val_nn = int(torch.ceil(model_param_quant.abs().max() + 2).item())
-    
-    range_coder_nn = RangeCoder(ac_max_val_nn)
-
-    floating_point_scale_weight = model_param_quant.std().item() / math.sqrt(2)
-
-    # Find the closest element to the actual scale in the POSSIBLE_SCALE_NN list
-    scale_index_nn = int(torch.argmin((POSSIBLE_SCALE_NN - floating_point_scale_weight).abs()).item())
-
-    # ----------------- Actual entropy coding
-    cur_bitstream_path = f'{bitstream_path}_MLP'
-    range_coder_nn.encode(
-        cur_bitstream_path,
-        model_param_quant,
-        torch.zeros_like(model_param_quant),
-        POSSIBLE_SCALE_NN[scale_index_nn] * torch.ones_like(model_param_quant)
-    )
-
-    n_bytes_nn = os.path.getsize(cur_bitstream_path)
-    # ================= Encode the MLP into a bitstream file ================ #
-    
     # Write the header
     header_path = f'{bitstream_path}_header'
     success = write_frame_header(
         header_path,
         img_size,
         config,
-        ac_max_val_nn,
-        q_step_index_nn,
-        scale_index_nn,
-        n_bytes_nn,
+        shape_mu_scale_and_n_bytes
     )
 
     if success:
@@ -75,15 +76,22 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         subprocess.call(f'cat {header_path} >> {bitstream_path}', shell=True)
         subprocess.call(f'rm -f {header_path}', shell=True)
 
-        subprocess.call(f'cat {cur_bitstream_path} >> {bitstream_path}', shell=True)
-        subprocess.call(f'rm -f {cur_bitstream_path}', shell=True)
-    
+        for i in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
+            cur_bitstream_path = f'{bitstream_path}_{i}'
+            subprocess.call(f'cat {cur_bitstream_path} >> {bitstream_path}', shell=True)
+            subprocess.call(f'rm -f {cur_bitstream_path}', shell=True)
+
     else:
         # remove intermediate bitstream
         subprocess.call(f'rm -f {header_path}', shell=True)
-        subprocess.call(f'rm -f {cur_bitstream_path}', shell=True)
+
+        for i in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
+            cur_bitstream_path = f'{bitstream_path}_{i}'
+            subprocess.call(f'cat {cur_bitstream_path} >> {bitstream_path}', shell=True)
+            subprocess.call(f'rm -f {cur_bitstream_path}', shell=True)
+
         return False
-    
+
     # Encoding's done, we no longer need deterministic algorithms
     torch.use_deterministic_algorithms(False)
 

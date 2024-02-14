@@ -4,23 +4,13 @@
 import torch
 from typing import Tuple
 
+MAX_PARAM_SHAPE = 2**24 - 1 # maximum number of elements in a tensor
+MAX_NN_BYTES = 2**24 - 1 
+QUANT_BITDEPTH = 4 # QUANT_BITDEPTH quantization
+MAX_AC_MAX_VAL = 2 ** (QUANT_BITDEPTH - 1) - 1 # maximum value for signed QUANT_BITDEPTH quantization
 
-MAX_AC_MAX_VAL = 65535 # 2**16 for 16-bit code in bitstream header.
-MAX_NN_BYTES = 2**32 - 1 # 2**32 for 32-bit code in bitstream header.
 Q_PROBA_DEFAULT = 128.0
 
-POSSIBLE_Q_STEP_NN = 2. ** torch.linspace(-7, 0, 8, device='cpu')
-
-# Avoid numerical instability when measuring the rate of the NN parameters
-MIN_SCALE_NN_WEIGHTS_BIAS = 1.0/1024.0
-
-# List of all possible scales when coding a MLP
-POSSIBLE_SCALE_NN = 2 ** torch.linspace(MIN_SCALE_NN_WEIGHTS_BIAS, 16, steps=2 ** 16 - 1, device='cpu')
-
-FIXED_POINT_FRACTIONAL_BITS = 6 # 8 works fine in pure int mode (ARMINT True).
-                                # reduced to 6 for now for int-in-fp mode (ARMINT False)
-                                # that has less headroom (23-bit mantissa, not 32)
-FIXED_POINT_FRACTIONAL_MULT = 2 ** FIXED_POINT_FRACTIONAL_BITS
 
 _ENCODING_TYPE = [
     "Identity",
@@ -104,3 +94,86 @@ def generate_input_grid(
     xy = torch.stack((yv.flatten(), xv.flatten())).t()
 
     return xy
+
+
+def get_num_layers(config: dict) -> int:
+    """Get the number of layers in the network.
+
+    Args:
+        config (dict): The configuration file
+
+    Returns:
+        int: The number of layers in the network
+    """
+    return config["n_hidden_layers"] + 1
+
+
+def get_num_levels(config: dict) -> int:
+    """Get the number of levels in the input encoding.
+
+    Args:
+        config (dict): The configuration file
+
+    Returns:
+        int: The number of levels in the input encoding
+    """
+    otype = config["otype"]
+    num_levels = 1
+
+    if otype == "Identity":
+        num_levels = 1
+    elif otype == "Frequency":
+        num_levels = config["n_frequencies"]
+    elif otype == "OneBlob":
+        num_levels = config["n_bins"]
+    elif otype == "SphericalHarmonics":
+        num_levels = 1
+    elif otype == "TriangleWave":
+        num_levels = config["n_frequencies"]
+    elif otype == "Grid":
+        num_levels = config["n_levels"]
+
+    return num_levels
+
+def generate_param_index_list(elements_count_list):
+    # Calculate cumulative sum
+    cumulative_sum = [0] + elements_count_list
+    for i in range(1, len(cumulative_sum)):
+        cumulative_sum[i] += cumulative_sum[i - 1]
+
+    # Generate indices list
+    indices_list = [cumulative_sum[i] for i in range(1, len(cumulative_sum))]
+
+    return indices_list
+
+def reverse_generate_param_index_list(indices_list):
+    # Calculate the differences between consecutive indices
+    counts_list = [indices_list[0]]
+    for i in range(1, len(indices_list)):
+        counts_list.append(indices_list[i] - indices_list[i - 1])
+
+    return counts_list
+
+def get_param_partitions(encoding_config: dict, network_config: dict, n_output_dims: int) -> list[int]:
+    # get partitions for input encoding
+    config = encoding_config
+    otype = config["otype"]
+    if otype == "Grid":
+        # Calculate resolutions for each level
+        resolutions = torch.ceil(2 ** (torch.arange(config["n_levels"]) * torch.log2(torch.tensor(config["per_level_scale"]))) * config["base_resolution"] - 1) + 1
+
+        # Calculate the number of parameters for each level
+        params_per_level = (resolutions ** 2 + 7) // 8 * 8 # to align with memory
+
+        # Truncate parameters if they exceed the size of the hashmap
+        params_per_level = torch.minimum(params_per_level, torch.tensor(2 ** config["log2_hashmap_size"])).int() * config["n_features_per_level"]
+
+    config = network_config
+    padded_output_width = (n_output_dims + 15) // 16 * 16 # to align with memory
+    padded_input_width = (encoding_config["n_levels"] * encoding_config["n_features_per_level"] + 3) // 4 * 4 # to align with memory
+
+    params_per_layer = [padded_input_width * config["n_neurons"]] + [config["n_neurons"] * config["n_neurons"] for _ in range(config["n_hidden_layers"] - 1)] + [config["n_neurons"] * padded_output_width]
+    
+    elements_count_list = params_per_level.tolist() + params_per_layer
+    return generate_param_index_list(elements_count_list)
+        

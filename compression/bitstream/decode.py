@@ -1,14 +1,15 @@
 # Adapted from Cool-Chic <https://github.com/Orange-OpenSource/Cool-Chic>
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
-from typing import Tuple
+import math
 import torch
+from typing import Tuple
 
 from torch import Tensor
 from bitstream.header import read_frame_header
 from bitstream.range_coder import RangeCoder
-from models.network import NetwortwithInputEncoding
-from utils.misc import generate_input_grid, POSSIBLE_SCALE_NN, POSSIBLE_Q_STEP_NN
+from models.network import QuantizableNetworkWithInputEncoding
+from utils.misc import generate_input_grid, MAX_AC_MAX_VAL
 
 
 @torch.no_grad()
@@ -40,28 +41,28 @@ def decode_frame(
     bitstream = bitstream[header_info.get('n_bytes_header'): ]
 
     # =========================== Decode the NNs ============================ #
-    # To decode each NN (arm, upsampling and synthesis):
     #   1. Instantiate an empty Module
-    #   2. Populate it with the weights and biases decoded from the bitstream
+    #   2. Populate it with the weights decoded from the bitstream
     #   3. Send it to the requested device.
                 
     # initialize empty model
-    model = NetwortwithInputEncoding(
+    model = QuantizableNetworkWithInputEncoding(
         n_input_dims=2,
         n_output_dims=header_info.get('img_size')[-1],
         encoding_config=header_info.get('encoding_configs'),
         network_config=header_info.get('network_configs')
     )
-    # =========================== Decode the NNs ============================ #
-    
-    range_coder_nn = RangeCoder(AC_MAX_VAL = header_info.get('ac_max_val_nn'))
-    range_coder_nn.load_bitstream(bitstream)
+    # =========================== Decode the encoding and network ============ #
+    params = []
+    range_coder = RangeCoder(AC_MAX_VAL = MAX_AC_MAX_VAL)
+    for shape_i, mu_i, scale_i, n_bytes_i in header_info.get("shape_mu_scale_and_n_bytes"):
+        range_coder.load_bitstream(bitstream[:n_bytes_i])
+        model_param_quant_i = range_coder.decode(torch.zeros(shape_i), torch.ones(shape_i))
+        model_param_quant_i = (model_param_quant_i - mu_i) * scale_i 
+        params.append(model_param_quant_i)
+        bitstream = bitstream[n_bytes_i:]
 
-    model_param_quant = range_coder_nn.decode(torch.zeros(model.params.shape), torch.ones(model.params.shape) * POSSIBLE_SCALE_NN[header_info.get('scale_index_nn')])
-    
-    # Don't forget inverse quantization!
-    model_param = model_param_quant * POSSIBLE_Q_STEP_NN[header_info.get('q_step_index_nn')]
-    model.set_param(model_param)
+    model.set_param(torch.cat(params).flatten())
 
     xy = generate_input_grid(header_info.get('img_size'), device)
 

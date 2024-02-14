@@ -17,11 +17,27 @@ Header for the image compressed bitstream:
     [Number of Image channels]                      1 byte
     [Number of bytes used for encoding configs]     1 byte
     [Number of bytes used for network configs]      1 byte
-
-    [Maximum act value of network]                  2 bytes
-    [Index of quantization step network params]     1 byte
-    [Index of scale entropy coding network params]  2 bytes
-    [Number of bytes used for network]              3 bytes (less than 2**32 - 1 bytes)
+    
+    # ======================== ENCODING STUFF ======================== #
+    [param shape for level 0]                       3 bytes
+    [mu for level 0]                                1 byte
+    [scale for level 0]                             4 bytes (float)
+    [Number of bytes used for level 0]              3 bytes (less than 2**24 - 1 bytes)
+    ...
+    [param shape for level N - 1]                   3 bytes
+    [mu for level N - ]                             1 byte
+    [scale for level N - ]                          4 bytes (float)
+    [Number of bytes used for level N - 1]          3 bytes (less than 2**24 - 1 bytes)
+    # ======================== NETWORK STUFF ======================== #
+    [param shape for layer 0]                       3 bytes
+    [mu for layer 0]                                1 bytes
+    [scale for layer 0]                             4 bytes (float)
+    [Number of bytes used for layer 0]              3 bytes (less than 2**24 - 1 bytes)
+    ...
+    [param shape for layer M - 1]                   3 bytes
+    [mu for layer M - 1]                            1 bytes
+    [scale for layer M - 1]                         4 bytes (float)
+    [Number of bytes used for layer M - 1]          3 bytes (less than 2**24 - 1 bytes)
     ? ======================== FRAME HEADER ======================== ?
 
 """
@@ -36,8 +52,8 @@ from utils.misc import (
     _INTERPOLATION_TYPE,
     _ACTIVATION_TYPE,
     _NETWORK_TYPE,
-    MAX_AC_MAX_VAL,
-    MAX_NN_BYTES
+    get_num_layers,
+    get_num_levels
 )
 
 
@@ -164,20 +180,14 @@ class FrameHeader(TypedDict):
     img_size: Tuple[int, int, int]  # Format: (HWC)
     encoding_configs: dict  # _ENCODING_CONFIG
     network_configs: dict  # _NETWORK_CONFIG
-    q_step_index_nn: int  # Index of the quantization step used for NN
-    scale_index_nn: int  # Index of the scale used for entropy coding NN
-    n_bytes_nn: int  # Number of bytes for params of the NN
-    ac_max_val_nn: int  # The range coder AC_MAX_VAL parameters for entropy coding NN
+    shape_mu_scale_and_n_bytes: list[Tuple]  # List of (shape, mu, scale, bytes) for each encoding level
 
 
 def write_frame_header(
     header_path: str,
     img_size: Tuple[int, int, int],
     config: dict,
-    ac_max_val_nn: int,
-    q_step_index_nn: int,
-    scale_index_nn: int,
-    n_bytes_nn: int,
+    shape_mu_scale_and_n_bytes: list[Tuple]
 ):
     """Write a frame header to a a file located at <header_path>.
     The structure of the header is described above.
@@ -191,11 +201,6 @@ def write_frame_header(
     n_bytes_header += 1  # Number of bytes of encoding configs
     n_bytes_header += 1  # Number of bytes of Network configs
 
-    n_bytes_header += 2  # AC_MAX_VAL for NN
-    n_bytes_header += 1  # Index of the quantization step
-    n_bytes_header += 2  # Index of scale entropy coding
-    n_bytes_header += 3  # Number of bytes for NN
-
     # encoding stuff
     n_bytes_encoding_config, tmp_byte_encoding = write_encoding_config(config["encoding"])
     n_bytes_header += n_bytes_encoding_config
@@ -203,6 +208,8 @@ def write_frame_header(
     n_bytes_network_config, tmp_byte_network = write_network_config(config["network"])
     n_bytes_header += n_bytes_network_config
 
+    for _ in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
+        n_bytes_header += 12  # 3 bytes for shape, 1 byte for mu, 4 bytes for scale, 4 bytes for n_bytes
 
     byte_to_write = b""
     byte_to_write += n_bytes_header.to_bytes(2, byteorder="big", signed=False)
@@ -216,32 +223,11 @@ def write_frame_header(
     byte_to_write += n_bytes_network_config.to_bytes(1, byteorder="big", signed=False)
     byte_to_write += tmp_byte_network
 
-    if ac_max_val_nn > MAX_AC_MAX_VAL:
-        print(f"AC_MAX_VAL NN is too big!")
-        print(f"Found {ac_max_val_nn}, should be smaller than {MAX_AC_MAX_VAL}")
-        print(f"Exiting!")
-        return False
-
-    byte_to_write += ac_max_val_nn.to_bytes(2, byteorder="big", signed=False)
-    if q_step_index_nn < 0:
-        # hack -- ensure -1 translated to 255.
-        byte_to_write += int(255).to_bytes(1, byteorder="big", signed=False)
-    else:
-        byte_to_write += q_step_index_nn.to_bytes(1, byteorder="big", signed=False)
-
-    byte_to_write += scale_index_nn.to_bytes(2, byteorder="big", signed=False)
-
-    # if n_bytes_nn > MAX_AC_MAX_VAL:
-    #     print(f"Found {n_bytes_nn}, should be smaller than {MAX_AC_MAX_VAL}")
-    #     print(f"Exiting!")
-    #     return False
-    
-    if n_bytes_nn > MAX_NN_BYTES:
-        print(f"Found {n_bytes_nn}, should be smaller than {MAX_NN_BYTES}")
-        print(f"Exiting!")
-        return False
-    
-    byte_to_write += n_bytes_nn.to_bytes(3, byteorder="big", signed=False)
+    for shape_i, mu_i, scale_i, n_bytes_i in shape_mu_scale_and_n_bytes:
+        byte_to_write += shape_i.to_bytes(3, byteorder="big", signed=False)
+        byte_to_write += int(mu_i).to_bytes(1, byteorder="big", signed=False)
+        byte_to_write += struct.pack("f", scale_i)
+        byte_to_write += n_bytes_i.to_bytes(4, byteorder="big", signed=False)
 
     with open(header_path, "wb") as fout:
         fout.write(byte_to_write)
@@ -256,10 +242,7 @@ def write_frame_header(
     print('------------------------------')
     print(f'"n_bytes_header": {n_bytes_header}')
     print(f'"img_size": {img_size}')
-    print(f'"q_step_index_nn": {q_step_index_nn}')
-    print(f'"scale_index_nn": {scale_index_nn}')
-    print(f'"n_bytes_nn": {n_bytes_nn}')
-    print(f'"ac_max_val_nn": {ac_max_val_nn}')
+    print(f'"shape_mu_scale_and_n_bytes": {shape_mu_scale_and_n_bytes}')
     print('         ------------------------')
 
     return True
@@ -292,30 +275,25 @@ def read_frame_header(header_bytes: bytes) -> FrameHeader:
     network_configs = read_network_config(header_bytes[ptr:ptr + n_bytes_network_config])
     ptr += n_bytes_network_config
 
-    ac_max_val_nn = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
-    ptr += 2
-
-    q_step_index_nn = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
-    ptr += 1
-
-    scale_index_nn = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
-    ptr += 2
-
-    n_bytes_nn = int.from_bytes(header_bytes[ptr:ptr + 3], byteorder='big', signed=False)
-    ptr += 3
-
+    shape_mu_scale_and_n_bytes = []
+    for _ in range(get_num_levels(encoding_configs) + get_num_layers(network_configs)):
+        shape_i = int.from_bytes(header_bytes[ptr:ptr + 3], byteorder='big', signed=False)
+        ptr += 3
+        mu_i = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
+        ptr += 1
+        scale_i = struct.unpack_from("f", header_bytes, ptr)[0]
+        ptr += 4
+        n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 4], byteorder='big', signed=False)
+        ptr += 4
+        shape_mu_scale_and_n_bytes.append([shape_i, mu_i, scale_i, n_bytes_i])
 
     header: FrameHeader = {
         "n_bytes_header": n_bytes_header,
         "img_size": img_size,
         "encoding_configs": encoding_configs,
         "network_configs": network_configs,
-        "q_step_index_nn": q_step_index_nn,
-        "scale_index_nn": scale_index_nn,
-        "n_bytes_nn": n_bytes_nn,
-        "ac_max_val_nn": ac_max_val_nn
+        "shape_mu_scale_and_n_bytes": shape_mu_scale_and_n_bytes
     }
-    
 
     print('\nContent of the frame header:')
     print('------------------------------')
