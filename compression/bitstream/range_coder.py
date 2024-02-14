@@ -19,11 +19,11 @@ class RangeCoder:
         # Actual q_step is 1 / Q_PROBA
         self.Q_PROBA = Q_PROBA
 
-        # Data are in [-AC_MAX_VAL -1, AC_MAX_VAL]
+        # Data are in [-AC_MAX_VAL, AC_MAX_VAL + 1]
         self.AC_MAX_VAL = AC_MAX_VAL
 
-        self.alphabet = np.arange(-self.AC_MAX_VAL - 1, self.AC_MAX_VAL)
-        self.model_family = constriction.stream.model.QuantizedLaplace(-self.AC_MAX_VAL - 1, self.AC_MAX_VAL)
+        self.alphabet = np.arange(-self.AC_MAX_VAL, self.AC_MAX_VAL + 1)
+        self.model_family = constriction.stream.model.QuantizedLaplace(-self.AC_MAX_VAL, self.AC_MAX_VAL + 1)
 
     def quantize_proba_parameters(self, x: Tensor) -> Tensor:
         """Apply a quantization to the input x to reduce floating point

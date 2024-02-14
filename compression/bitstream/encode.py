@@ -12,10 +12,10 @@ from typing import Tuple
 from utils.misc import (
     get_num_layers, 
     get_num_levels, 
+    MAX_HASH_LEVEL_BYTES,
     MAX_NN_BYTES, 
     MAX_AC_MAX_VAL, 
-    MAX_PARAM_SHAPE,
-    QUANT_BITDEPTH
+    MAX_PARAM_SHAPE
     )
 
 
@@ -41,12 +41,13 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
     for i, pp_i, param_quant_i in zip(range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])), 
                                       model.param_counts_per_level, 
                                       model.fragment_param(model.get_param())):
+        print(f"Encoding level {i} with {pp_i} parameters")
         if pp_i > MAX_PARAM_SHAPE:
             raise ValueError(f"Found param shape {pp_i} exceeds the maximum allowed {MAX_PARAM_SHAPE}")
         
         mu_i = model._mu[i]
         scale_i = model._scale[i]
-        param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(-MAX_AC_MAX_VAL-1, MAX_AC_MAX_VAL)
+        param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(-MAX_AC_MAX_VAL, MAX_AC_MAX_VAL+1)
         cur_bitstream_path = f'{bitstream_path}_{i}'
         range_coder.encode(
             cur_bitstream_path,
@@ -56,9 +57,13 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         )
 
         n_bytes_i = os.path.getsize(cur_bitstream_path)
-        if n_bytes_i > MAX_NN_BYTES:
-            raise ValueError(f"Found number of bytes {n_bytes_i} exceeds the maximum allowed {MAX_NN_BYTES}")
+        limitation = MAX_HASH_LEVEL_BYTES if i < get_num_levels(config["encoding"]) else MAX_NN_BYTES
+        if n_bytes_i > limitation:
+            raise ValueError(f"Found number of bytes {n_bytes_i} exceeds the maximum allowed {limitation}")
         
+        # hack to encode 65536 to 0
+        pp_i = 0 if pp_i == MAX_PARAM_SHAPE else pp_i
+        n_bytes_i = 0 if n_bytes_i == limitation else n_bytes_i
         shape_mu_scale_and_n_bytes.append((pp_i, mu_i.item(), scale_i.item(), n_bytes_i))
 
     # Write the header

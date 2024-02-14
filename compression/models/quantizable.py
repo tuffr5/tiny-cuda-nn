@@ -35,9 +35,11 @@ class QuantizableModule(nn.Module):
         assert self.param_partitions is not None, 'You must initialize the parameter partitions before initializing the quantization parameters.'
         if params is not None:
             params = self.fragment_param(params)
-            self._scale = nn.Parameter(torch.tensor([2 * p.abs().max() / MAX_AC_MAX_VAL for p in params]), requires_grad=True)
-            self._mu = torch.tensor([-p.min() for p in params]) / torch.max(self._scale.detach(), torch.tensor(1e-5))
-            self._mu = torch.max(self._mu.round_(), torch.tensor(0.))
+            p_max = torch.tensor([p.abs().max() for p in params])
+            p_min = torch.tensor([-p.abs().max() if p.min() < 0 else 0 for p in params])
+            self._scale = nn.Parameter((p_max - p_min) / (MAX_AC_MAX_VAL + 1), requires_grad=True)
+            self._mu = -p_min / torch.max(self._scale.detach(), torch.tensor(1e-5))
+            self._mu = self._mu.round_()
         else:
             self._mu = torch.zeros(len(self.param_partitions))
             self._scale = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=True)
@@ -95,7 +97,7 @@ class QuantizableModule(nn.Module):
             # print(f"[Before]mu: {torch.amax(mu)}, scale: {torch.amax(scale)}")
             # print(f"[Before]mu: {torch.amin(mu)}, scale: {torch.amin(scale)}")
             # scale = scale * 1.0 / math.sqrt(p.numel() * MAX_AC_MAX_VAL)
-            sent_param = (round_ste(p / scale) + mu).clamp(-MAX_AC_MAX_VAL-1, MAX_AC_MAX_VAL)
+            sent_param = (round_ste(p / scale) + mu).clamp(-MAX_AC_MAX_VAL, MAX_AC_MAX_VAL + 1)
             sent_param = (sent_param - mu) * scale
 
             # print(f"[After]mu: {torch.amax(mu)}, scale: {torch.amax(scale)}, sent_param: {torch.amax(sent_param)}")

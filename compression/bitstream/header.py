@@ -19,25 +19,25 @@ Header for the image compressed bitstream:
     [Number of bytes used for network configs]      1 byte
     
     # ======================== ENCODING STUFF ======================== #
-    [param shape for level 0]                       3 bytes
+    [param shape for level 0]                       2 bytes (less than MAX_PARAM_SHAPE)
     [mu for level 0]                                1 byte
     [scale for level 0]                             4 bytes (float)
-    [Number of bytes used for level 0]              3 bytes (less than 2**24 - 1 bytes)
+    [Number of bytes used for level 0]              3 bytes (less than MAX_NN_BYTES)
     ...
-    [param shape for level N - 1]                   3 bytes
+    [param shape for level N - 1]                   2 bytes
     [mu for level N - ]                             1 byte
     [scale for level N - ]                          4 bytes (float)
-    [Number of bytes used for level N - 1]          3 bytes (less than 2**24 - 1 bytes)
+    [Number of bytes used for level N - 1]          3 bytes
     # ======================== NETWORK STUFF ======================== #
-    [param shape for layer 0]                       3 bytes
+    [param shape for layer 0]                       2 bytes (less than MAX_PARAM_SHAPE)
     [mu for layer 0]                                1 bytes
     [scale for layer 0]                             4 bytes (float)
-    [Number of bytes used for layer 0]              3 bytes (less than 2**24 - 1 bytes)
+    [Number of bytes used for layer 0]              2 bytes (less than MAX_NN_BYTES)
     ...
-    [param shape for layer M - 1]                   3 bytes
+    [param shape for layer M - 1]                   2 bytes
     [mu for layer M - 1]                            1 bytes
     [scale for layer M - 1]                         4 bytes (float)
-    [Number of bytes used for layer M - 1]          3 bytes (less than 2**24 - 1 bytes)
+    [Number of bytes used for layer M - 1]          2 bytes 
     ? ======================== FRAME HEADER ======================== ?
 
 """
@@ -208,8 +208,8 @@ def write_frame_header(
     n_bytes_network_config, tmp_byte_network = write_network_config(config["network"])
     n_bytes_header += n_bytes_network_config
 
-    for _ in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
-        n_bytes_header += 12  # 3 bytes for shape, 1 byte for mu, 4 bytes for scale, 4 bytes for n_bytes
+    for i in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
+        n_bytes_header += 10 if i < get_num_levels(config["encoding"]) else 9
 
     byte_to_write = b""
     byte_to_write += n_bytes_header.to_bytes(2, byteorder="big", signed=False)
@@ -223,11 +223,14 @@ def write_frame_header(
     byte_to_write += n_bytes_network_config.to_bytes(1, byteorder="big", signed=False)
     byte_to_write += tmp_byte_network
 
-    for shape_i, mu_i, scale_i, n_bytes_i in shape_mu_scale_and_n_bytes:
-        byte_to_write += shape_i.to_bytes(3, byteorder="big", signed=False)
+    for i, (shape_i, mu_i, scale_i, n_bytes_i) in enumerate(shape_mu_scale_and_n_bytes):
+        byte_to_write += shape_i.to_bytes(2, byteorder="big", signed=False)
         byte_to_write += int(mu_i).to_bytes(1, byteorder="big", signed=False)
         byte_to_write += struct.pack("f", scale_i)
-        byte_to_write += n_bytes_i.to_bytes(4, byteorder="big", signed=False)
+        if i < get_num_levels(config["encoding"]):
+            byte_to_write += n_bytes_i.to_bytes(3, byteorder="big", signed=False)
+        else:
+            byte_to_write += n_bytes_i.to_bytes(2, byteorder="big", signed=False)
 
     with open(header_path, "wb") as fout:
         fout.write(byte_to_write)
@@ -276,15 +279,19 @@ def read_frame_header(header_bytes: bytes) -> FrameHeader:
     ptr += n_bytes_network_config
 
     shape_mu_scale_and_n_bytes = []
-    for _ in range(get_num_levels(encoding_configs) + get_num_layers(network_configs)):
-        shape_i = int.from_bytes(header_bytes[ptr:ptr + 3], byteorder='big', signed=False)
-        ptr += 3
+    for i in range(get_num_levels(encoding_configs) + get_num_layers(network_configs)):
+        shape_i = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
+        ptr += 2
         mu_i = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
         ptr += 1
         scale_i = struct.unpack_from("f", header_bytes, ptr)[0]
         ptr += 4
-        n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 4], byteorder='big', signed=False)
-        ptr += 4
+        if i < get_num_levels(encoding_configs):
+            n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 3], byteorder='big', signed=False)
+            ptr += 3
+        else:
+            n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
+            ptr += 2
         shape_mu_scale_and_n_bytes.append([shape_i, mu_i, scale_i, n_bytes_i])
 
     header: FrameHeader = {

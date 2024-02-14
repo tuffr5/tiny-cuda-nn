@@ -9,7 +9,14 @@ from torch import Tensor
 from bitstream.header import read_frame_header
 from bitstream.range_coder import RangeCoder
 from models.network import QuantizableNetworkWithInputEncoding
-from utils.misc import generate_input_grid, MAX_AC_MAX_VAL
+from utils.misc import (
+    generate_input_grid, 
+    MAX_AC_MAX_VAL, 
+    MAX_HASH_LEVEL_BYTES,
+    MAX_NN_BYTES, 
+    MAX_PARAM_SHAPE,
+    get_num_levels
+    )
 
 
 @torch.no_grad()
@@ -55,7 +62,11 @@ def decode_frame(
     # =========================== Decode the encoding and network ============ #
     params = []
     range_coder = RangeCoder(AC_MAX_VAL = MAX_AC_MAX_VAL)
-    for shape_i, mu_i, scale_i, n_bytes_i in header_info.get("shape_mu_scale_and_n_bytes"):
+    for i, (shape_i, mu_i, scale_i, n_bytes_i) in enumerate(header_info.get("shape_mu_scale_and_n_bytes")):
+        # hack back
+        shape_i = MAX_PARAM_SHAPE if shape_i == 0 else shape_i
+        limitation = MAX_HASH_LEVEL_BYTES if i < get_num_levels(header_info.get('encoding_configs')) else MAX_NN_BYTES
+        n_bytes_i = limitation if n_bytes_i == 0 else n_bytes_i
         range_coder.load_bitstream(bitstream[:n_bytes_i])
         model_param_quant_i = range_coder.decode(torch.zeros(shape_i), torch.ones(shape_i))
         model_param_quant_i = (model_param_quant_i - mu_i) * scale_i 

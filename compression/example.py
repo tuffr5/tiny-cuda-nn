@@ -52,7 +52,7 @@ class Image(torch.nn.Module):
         
 
 def get_args():
-    parser = argparse.ArgumentParser(description="Image Encoding.")
+    parser = argparse.ArgumentParser(description="Image compression example.")
 
     parser.add_argument("image_str", nargs="?", default="data/images/kodim04.png", help="Image to match")
     parser.add_argument("config", nargs="?", default="data/config_hash.json", help="JSON config for tiny-cuda-nn",)
