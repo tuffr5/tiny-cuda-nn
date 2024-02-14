@@ -48,7 +48,6 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         mu_i = model._mu[i]
         scale_i = model._scale[i]
         param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(0, AC_MAX_VAL)
-        print(f"param_quant_i: {torch.unique(param_quant_i)}")
         cur_bitstream_path = f'{bitstream_path}_{i}'
         range_coder.encode(
             cur_bitstream_path,

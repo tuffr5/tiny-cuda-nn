@@ -40,7 +40,6 @@ class QuantizableModule(nn.Module):
             self._scale = nn.Parameter((p_max - p_min) / AC_MAX_VAL, requires_grad=True)
             self._mu = -p_min / torch.max(self._scale.detach(), torch.tensor(1e-5))
             self._mu = self._mu.round_()
-            print(f"mu: {self._mu}")
         else:
             self._mu = torch.zeros(len(self.param_partitions))
             self._scale = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=True)
