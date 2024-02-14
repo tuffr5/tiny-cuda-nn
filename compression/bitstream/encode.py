@@ -41,7 +41,7 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
     for i, pp_i, param_quant_i in zip(range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])), 
                                       model.param_counts_per_level, 
                                       model.fragment_param(model.get_param())):
-        print(f"Encoding level {i} with {pp_i} parameters")
+        
         if pp_i > MAX_PARAM_SHAPE:
             raise ValueError(f"Found param shape {pp_i} exceeds the maximum allowed {MAX_PARAM_SHAPE}")
         
