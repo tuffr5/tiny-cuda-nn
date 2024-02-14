@@ -9,7 +9,6 @@ import time
 
 import commentjson as json
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from bitstream.encode import encode_frame
@@ -47,7 +46,7 @@ class Image(torch.nn.Module):
     @torch.no_grad()
     def forward(self, xs, mode='bicubic'):
         xs = (2.0 * xs - 1.0).unsqueeze_(0).unsqueeze_(-2)
-        sampled = F.grid_sample(self.data, xs, mode=mode, padding_mode='border', align_corners=True)
+        sampled = F.grid_sample(self.data, xs, mode=mode, padding_mode='reflection', align_corners=False)
         return sampled.squeeze_(0).squeeze_(-1).permute(1, 0)
         
 
@@ -124,7 +123,7 @@ if __name__ == "__main__":
             path,
             model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy(),
         )
-        model.set_param(model.get_quantized_precision_param())
+        model.dequantize()
         path = f"compression/results/enc_quant.jpg"
         print(f"Writing '{path}'... ", end="")
         write_image(
