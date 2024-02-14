@@ -171,7 +171,7 @@ def get_param_partitions(encoding_config: dict, network_config: dict, n_output_d
 
     config = network_config
     padded_output_width = (n_output_dims + 15) // 16 * 16 # to align with memory
-    padded_input_width = (encoding_config["n_levels"] * encoding_config["n_features_per_level"] + 3) // 4 * 4 # to align with memory
+    padded_input_width = (encoding_config["n_levels"] * encoding_config["n_features_per_level"] + 15) // 16 * 16 # to align with memory
 
     params_per_layer = [padded_input_width * config["n_neurons"]] + [config["n_neurons"] * config["n_neurons"] for _ in range(config["n_hidden_layers"] - 1)] + [config["n_neurons"] * padded_output_width]
     
