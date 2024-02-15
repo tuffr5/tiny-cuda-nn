@@ -26,23 +26,30 @@ class QuantizableModule(nn.Module):
         self._quantized_precision_param: Optional[list] = None
         
         # quantization parameters for each level
-        self._mu = None
+        self._mu: Optional[Tensor] = None
         self._scale: Optional[nn.ParameterList] = None
+        
+        # used in entropy coding
+        self._q_scale: Optional[Tensor] = None
 
         self.param_partitions: Optional[list] = None
 
     def init_quant_params(self, params: Optional[list] = None):
         assert self.param_partitions is not None, 'You must initialize the parameter partitions before initializing the quantization parameters.'
         if params is not None:
-            params = self.fragment_param(params)
-            p_max = torch.tensor([p.abs().max() for p in params])
-            p_min = torch.tensor([-p.abs().max() if p.min() < 0 else 0 for p in params])
-            self._scale = nn.Parameter((p_max - p_min) / AC_MAX_VAL, requires_grad=True)
-            self._mu = -p_min / torch.max(self._scale.detach(), torch.tensor(1e-5))
-            self._mu = self._mu.round_()
+            params = self.fragment_param(params.detach())
+            for i, p in enumerate(params):
+                if p.min() < 0:
+                    p_min = -p.abs().max()
+                else:
+                    p_min = 0
+                self._scale[i] = (p.abs().max() - p_min) / AC_MAX_VAL
+            self._mu[:] = (-p_min / self._scale).round_()
         else:
-            self._mu = torch.zeros(len(self.param_partitions))
             self._scale = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=True)
+            self._mu = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=False)
+
+        self._q_scale = nn.Parameter(torch.rand(len(self._mu), 1), requires_grad=False)
 
     def get_param(self) -> Tensor:
         return self.net.params
@@ -72,33 +79,58 @@ class QuantizableModule(nn.Module):
             return rate_param
         
         param = self.fragment_param(self.get_param())  
-        for p, mu, scale in zip(param, self._mu, self._scale):
-            sent_param = (p - mu) / scale
+        for p, scale in zip(param, self._scale):
 
             # compute their entropy.
-            distrib = Laplace(0., max(sent_param.std() / math.sqrt(2), 1.0e-3))
+            distrib = Laplace(0., max(scale, 1e-5))
+            # print(f"p: {p.std()}, scale: {scale}")
             # No value can cost more than 32 bits
-            proba = torch.clamp(distrib.cdf(sent_param + 0.5) - distrib.cdf(sent_param - 0.5), min=2 ** -32, max=None)
+            proba = torch.clamp(distrib.cdf(p + 0.5) - distrib.cdf(p - 0.5), min=2 ** -32, max=None)
 
             rate_param += -torch.log2(proba).sum()
             
         return rate_param
 
     def quantize(self):
+        """Quantize the model. Should be called after all training steps."""
         fp_param = self.get_full_precision_param()
 
         assert fp_param is not None, 'You must save the full precision parameters '\
             'before quantizing the model. Use model.save_full_precision_param().'
         
-        fp_param = self.fragment_param(fp_param.detach())
+        fp_param = self.fragment_param(fp_param)
         params = []
-        for p, mu, scale in zip(fp_param, self._mu, self._scale):
-            sent_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
-            sent_param = (sent_param - mu) * scale
+        for i, p, mu, scale in zip(range(len(self._mu)), fp_param, self._mu, self._scale):
+            # print(f"[Quantize] p: {p.std()}, scale: {scale}")
+            sent_param = ((p / scale).round() + mu).clamp(0, AC_MAX_VAL)
+
+            # save q_scale for entropy coding
+            self._q_scale[i] = p.std() / scale
 
             params.append(sent_param)
         
         self.save_quantized_precision_param(torch.cat(params).flatten())
+
+    def dequantize(self):
+        """Dequantize the model."""
+        quant_param = self.get_quantized_precision_param()
+        assert quant_param is not None, 'You must quantize the model before dequantizing it. '\
+            'Use model.quantize().'
+        quant_param = self.fragment_param(quant_param)
+        params = []
+        for sent_param, mu, scale in zip(quant_param, self._mu, self._scale):
+            params.append((sent_param - mu) * scale)
+
+        self.set_param(torch.cat(params).flatten())
     
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, quant: bool= False) -> Tensor:
+        if quant:
+            fp_param = self.fragment_param(self.get_full_precision_param().detach())
+            params = []
+            for p, mu, scale in zip(fp_param, self._mu, self._scale):
+                sent_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
+                params.append((sent_param - mu) * scale)
+            
+            self.set_param(torch.cat(params).flatten())
+        
         return self.net(x)

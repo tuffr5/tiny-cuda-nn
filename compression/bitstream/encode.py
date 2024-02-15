@@ -39,16 +39,15 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
     shape_mu_scale_and_n_bytes = []
     range_coder = RangeCoder(AC_MAX_VAL=AC_MAX_VAL)
     for i, pp_i, param_quant_i in zip(range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])), 
-                                      model.param_counts_per_level, 
-                                      model.fragment_param(model.get_param())):
+                                      model.param_counts, 
+                                      model.fragment_param(model.get_quantized_precision_param().cpu())):
         
         if pp_i > MAX_PARAM_SHAPE:
             raise ValueError(f"Found param shape {pp_i} exceeds the maximum allowed {MAX_PARAM_SHAPE}")
         
         mu_i = model._mu[i]
         scale_i = model._scale[i]
-        q_scale_i = param_quant_i.std() / scale_i
-        param_quant_i = ((param_quant_i /scale_i).round() + mu_i).clamp(0, AC_MAX_VAL)
+        q_scale_i = model._q_scale[i]
         cur_bitstream_path = f'{bitstream_path}_{i}'
         range_coder.encode(
             cur_bitstream_path,

@@ -175,6 +175,9 @@ def get_param_partitions(encoding_config: dict, network_config: dict, n_output_d
 
     params_per_layer = [padded_input_width * config["n_neurons"]] + [config["n_neurons"] * config["n_neurons"] for _ in range(config["n_hidden_layers"] - 1)] + [config["n_neurons"] * padded_output_width]
     
-    elements_count_list = params_per_level.tolist() + params_per_layer
-    return generate_param_index_list(elements_count_list)
+    # elements_count_list = params_per_level.tolist() + params_per_layer
+    # return generate_param_index_list(elements_count_list)
+
+    return params_per_level.tolist(), params_per_layer
+
         

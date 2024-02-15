@@ -3,14 +3,15 @@ import torch
 
 def compute_l2_loss(output, targets):
     relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
-    print(f"relative_l2_error: {relative_l2_error.mean()}")
+    print(f"relative_l2_error: {relative_l2_error.mean():.6f}")
     return relative_l2_error.mean()
+
 
 def compute_loss(output, targets, rate_bpp, lmbda):
     relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
     # print(f"output: {torch.isnan(output).any()}, targets: {torch.isnan(targets).any()}")
     # print(f"output: {torch.amax(output)}, {torch.amin(output)}")
-    print(f"relative_l2_error: {relative_l2_error.mean()}, rate_bpp: {rate_bpp}")
+    print(f"relative_l2_error: {relative_l2_error.mean():.6f}, rate_bpp: {rate_bpp:.6f}")
     return lmbda * rate_bpp + relative_l2_error.mean()
 
 
@@ -27,7 +28,7 @@ class Trainer():
         self.model = model
         parameters = [
             {'params': model.net.parameters(), 'lr': self.lr},
-            {'params': model._scale, 'lr': self.lr},
+            {'params': model._scale, 'lr': 0.1 * self.lr},
         ]
         self.optimizer = torch.optim.Adam(parameters)
 
@@ -43,30 +44,30 @@ class Trainer():
         # quantization and optimization
         self._set_model_requires_grad(True)
         self._set_quant_params_requires_grad(False)
-        for _ in range(50): 
+        for _ in range(self.n_steps): 
             batch, targets = self._get_batch_and_targets()
             output = self.model(batch)
             loss = compute_l2_loss(output, targets)
             self._step_optimizer(loss)
 
-        
         self.model.save_full_precision_param()
-        self.model.init_quant_params(self.model.get_full_precision_param().detach())
-        for _ in range(self.n_steps - 50):
-            self._set_model_requires_grad(False)
-            self._set_quant_params_requires_grad(False)
-            batch, targets = self._get_batch_and_targets()   
+        self.model.init_quant_params(self.model.get_full_precision_param())
+        # self._set_model_requires_grad(False)
+        # self._set_quant_params_requires_grad(True)
+        # for _ in range(self.n_steps - 50):
+        #     batch, targets = self._get_batch_and_targets() 
+
+        #     output = self.model(batch, quant=True)
+        #     # rate_bpp = self.model.measure_laplace_rate() / (self.n_pixels * 8)
+        #     # loss = compute_loss(output, targets, rate_bpp, self.lmbda)
+
+        #     print(f"scale: {self.model._scale}")
+        #     loss = compute_l2_loss(output, targets)
+        #     self._step_optimizer(loss)
+
+        # quantize model
+        with torch.no_grad():
             self.model.quantize()
-            self.model.set_param(self.model.get_quantized_precision_param()) 
-
-            self._set_model_requires_grad(True)
-            self._set_quant_params_requires_grad(True)
-
-            output = self.model(batch)
-            # rate_bpp = self.model.measure_laplace_rate() / (self.n_pixels * 8)
-            # loss = compute_loss(output, targets, rate_bpp, self.lmbda)
-            loss = compute_l2_loss(output, targets)
-            self._step_optimizer(loss)
 
     def _get_batch_and_targets(self):
         batch = torch.rand([self.batch_size, 2], device=self.device, dtype=torch.float32)
