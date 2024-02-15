@@ -9,6 +9,8 @@ import time
 
 import commentjson as json
 import torch
+import random
+import numpy as np
 import torch.nn.functional as F
 
 from bitstream.encode import encode_frame
@@ -18,6 +20,13 @@ from models.trainer import Trainer
 from utils.common import read_image, write_image
 from utils.misc import generate_input_grid
 import compressai.utils.bench.codecs as bench
+
+
+def seed_all(seed):
+    """Seed random number generators for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 try:
@@ -62,7 +71,7 @@ def get_args():
     # model related args
     parser.add_argument("batch_size", nargs="?", default=2**18, help="batch size")
     parser.add_argument("lr", nargs="?", default=0.01, help="learning rate")
-    parser.add_argument("n_steps", nargs="?", default=1000, help="number of steps for on-the-fly-training")
+    parser.add_argument("n_steps", nargs="?", default=10000, help="number of steps for on-the-fly-training")
     parser.add_argument("device", nargs="?", default="cuda", help="device to use")
     parser.add_argument("n_pixels", nargs="?", default=512*512, help="number of pixels in the image")
     parser.add_argument("lmbda", nargs="?", default=0.002, help="lambda for RD cost")
@@ -72,12 +81,13 @@ def get_args():
 
 
 if __name__ == "__main__":
-    start_time = time.time()
+    seed_all(1337)
     print("===============================================================")
     print("This script is an image compression example using tiny_cuda_nn.")
     print(f"Using PyTorch {torch.__version__} with CUDA {torch.version.cuda}")
     print("===============================================================")
 
+    start_time = time.time()
     device = torch.device("cuda")
     args = get_args()
 
