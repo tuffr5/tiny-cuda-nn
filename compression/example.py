@@ -17,6 +17,7 @@ from models.network import QuantizableNetworkWithInputEncoding
 from models.trainer import Trainer
 from utils.common import read_image, write_image
 from utils.misc import generate_input_grid
+import compressai.utils.bench.codecs as bench
 
 
 try:
@@ -61,7 +62,7 @@ def get_args():
     # model related args
     parser.add_argument("batch_size", nargs="?", default=2**18, help="batch size")
     parser.add_argument("lr", nargs="?", default=0.01, help="learning rate")
-    parser.add_argument("n_steps", nargs="?", default=100, help="number of steps for on-the-fly-training")
+    parser.add_argument("n_steps", nargs="?", default=1000, help="number of steps for on-the-fly-training")
     parser.add_argument("device", nargs="?", default="cuda", help="device to use")
     parser.add_argument("n_pixels", nargs="?", default=512*512, help="number of pixels in the image")
     parser.add_argument("lmbda", nargs="?", default=0.002, help="lambda for RD cost")
@@ -115,21 +116,21 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         model.to(device)
+        image_array = image.data.squeeze(0).permute(1, 2, 0).cpu().numpy()
         xy = generate_input_grid(img_shape, device)
         model.set_param(model.get_full_precision_param())
         path = f"compression/results/enc_fp.jpg"
         print(f"Writing '{path}'... ", end="")
-        write_image(
-            path,
-            model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy(),
-        )
+        rec_image = model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy()
+        write_image(path, rec_image)
+
+        print(f"Full-precison Model: {bench.compute_metrics((image_array* 255).astype('uint8'), (rec_image * 255).astype('uint8'), metrics=['psnr', 'ms-ssim'])}")
         model.dequantize()
         path = f"compression/results/enc_quant.jpg"
         print(f"Writing '{path}'... ", end="")
-        write_image(
-            path,
-            model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy(),
-        )
+        rec_image = model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy()
+        write_image(path, rec_image)
+        print(f"Quantized Model   : {bench.compute_metrics((image_array* 255).astype('uint8'), (rec_image * 255).astype('uint8'), metrics=['psnr', 'ms-ssim'])}")
     print("done.")
     # clean up
     tcnn.free_temporary_memory()
