@@ -56,13 +56,14 @@ class Trainer():
         self.model.init_quant_params(self.model.get_full_precision_param())
         self._set_quant_params_requires_grad(True)
         # Quantization training
-        for _ in range(100):
+        for _ in range(10):
             batch, targets = self._get_batch_and_targets() 
             # quantize and dequantize
             output = self.model(batch, quant=True)
-            rate_bpp = self.model.measure_laplace_rate() / (self.n_pixels * 8)
-            loss = compute_loss(output, targets, rate_bpp, self.lmbda)
-            self._step_optimizer(loss)
+            # rate_bpp = self.model.measure_laplace_rate() / (self.n_pixels * 8)
+            # loss = compute_loss(output, targets, rate_bpp, self.lmbda)
+            loss = compute_l2_loss(output, targets)
+            self._step_optimizer(loss, quant_phase=True)
 
         # quantize model
         self.model.quantize()
@@ -72,9 +73,12 @@ class Trainer():
         targets = self.traced_image(batch)
         return batch, targets
     
-    def _step_optimizer(self, loss):
+    def _step_optimizer(self, loss, quant_phase=False):
         self.optimizer.zero_grad()
-        loss.backward(retain_graph=True)
+        loss.backward()
+        # hack
+        if quant_phase:
+            self.model.net.params.grad = self.model._scale.new_zeros(self.model.net.params.shape)
         self.optimizer.step()
 
     def _set_model_requires_grad(self, On = False):

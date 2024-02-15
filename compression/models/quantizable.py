@@ -107,8 +107,8 @@ class QuantizableModule(nn.Module):
             fp_param = self.fragment_param(self.get_full_precision_param())
             params = []
             for p, mu, scale in zip(fp_param, self._mu, self._scale):
-                sent_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
-                params.append((sent_param - mu) * scale)
+                quant_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
+                params.append((quant_param - mu) * scale)
             
             self.set_param(torch.cat(params).flatten())
         
@@ -125,24 +125,24 @@ class QuantizableModule(nn.Module):
         fp_param = self.fragment_param(fp_param)
         params = []
         for i, p, mu, scale in zip(range(len(self._mu)), fp_param, self._mu, self._scale):
-            sent_param = ((p / scale).round() + mu).clamp(0, AC_MAX_VAL)
+            quant_param = ((p / scale).round() + mu).clamp(0, AC_MAX_VAL)
 
             # save q_scale for entropy coding
             self._q_scale[i] = p.std() / scale
 
-            params.append(sent_param)
+            params.append(quant_param)
         
         self.save_quantized_precision_param(torch.cat(params).flatten())
 
     @torch.no_grad()
     def dequantize(self):
         """Dequantize the model."""
-        quant_param = self.get_quantized_precision_param()
+        sent_param = self.get_quantized_precision_param()
         assert quant_param is not None, 'You must quantize the model before dequantizing it. '\
             'Use model.quantize().'
-        quant_param = self.fragment_param(quant_param)
+        sent_param = self.fragment_param(sent_param)
         params = []
-        for sent_param, mu, scale in zip(quant_param, self._mu, self._scale):
-            params.append((sent_param - mu) * scale)
+        for quant_param, mu, scale in zip(sent_param, self._mu, self._scale):
+            params.append((quant_param - mu) * scale)
 
         self.set_param(torch.cat(params).flatten())
