@@ -110,7 +110,7 @@ class QuantizableModule(nn.Module):
                 sent_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
                 params.append((sent_param - mu) * scale)
             
-            self.set_param(torch.cat(params).flatten().detach())
+            self.set_param(torch.cat(params).flatten())
         
         return self.net(x)
     
@@ -125,7 +125,6 @@ class QuantizableModule(nn.Module):
         fp_param = self.fragment_param(fp_param)
         params = []
         for i, p, mu, scale in zip(range(len(self._mu)), fp_param, self._mu, self._scale):
-            # print(f"[Quantize] p: {p.std()}, scale: {scale}")
             sent_param = ((p / scale).round() + mu).clamp(0, AC_MAX_VAL)
 
             # save q_scale for entropy coding

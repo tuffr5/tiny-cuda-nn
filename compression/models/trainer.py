@@ -74,8 +74,7 @@ class Trainer():
     
     def _step_optimizer(self, loss):
         self.optimizer.zero_grad()
-        loss.backward()
-        print(f"loss: {loss.item()}")
+        loss.backward(retain_graph=True)
         self.optimizer.step()
 
     def _set_model_requires_grad(self, On = False):
