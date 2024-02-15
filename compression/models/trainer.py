@@ -41,7 +41,7 @@ class Trainer():
             self.traced_image = image
     
     def train(self):
-        # quantization and optimization
+        # FP training
         self._set_model_requires_grad(True)
         self._set_quant_params_requires_grad(False)
         for _ in range(self.n_steps): 
@@ -50,24 +50,22 @@ class Trainer():
             loss = compute_l2_loss(output, targets)
             self._step_optimizer(loss)
 
+        self._set_model_requires_grad(False)
+        self._set_quant_params_requires_grad(False)
         self.model.save_full_precision_param()
         self.model.init_quant_params(self.model.get_full_precision_param())
-        # self._set_model_requires_grad(False)
-        # self._set_quant_params_requires_grad(True)
-        # for _ in range(self.n_steps - 50):
-        #     batch, targets = self._get_batch_and_targets() 
-
-        #     output = self.model(batch, quant=True)
-        #     # rate_bpp = self.model.measure_laplace_rate() / (self.n_pixels * 8)
-        #     # loss = compute_loss(output, targets, rate_bpp, self.lmbda)
-
-        #     print(f"scale: {self.model._scale}")
-        #     loss = compute_l2_loss(output, targets)
-        #     self._step_optimizer(loss)
+        self._set_quant_params_requires_grad(True)
+        # Quantization training
+        for _ in range(100):
+            batch, targets = self._get_batch_and_targets() 
+            # quantize and dequantize
+            output = self.model(batch, quant=True)
+            rate_bpp = self.model.measure_laplace_rate() / (self.n_pixels * 8)
+            loss = compute_loss(output, targets, rate_bpp, self.lmbda)
+            self._step_optimizer(loss)
 
         # quantize model
-        with torch.no_grad():
-            self.model.quantize()
+        self.model.quantize()
 
     def _get_batch_and_targets(self):
         batch = torch.rand([self.batch_size, 2], device=self.device, dtype=torch.float32)
@@ -77,6 +75,7 @@ class Trainer():
     def _step_optimizer(self, loss):
         self.optimizer.zero_grad()
         loss.backward()
+        print(f"loss: {loss.item()}")
         self.optimizer.step()
 
     def _set_model_requires_grad(self, On = False):

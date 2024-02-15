@@ -5,7 +5,6 @@ import math
 import torch
 from typing import Optional
 from torch import nn, Tensor
-from torch.distributions import Laplace
 from utils.misc import AC_MAX_VAL
 
 
@@ -14,6 +13,21 @@ def round_ste(x: torch.Tensor):
     Implement Straight-Through Estimator for rounding operation.
     """
     return (x.round() - x).detach() + x
+
+
+def laplace_cdf(x: Tensor, loc: Tensor, scale: Tensor) -> Tensor:
+    """Compute the laplace cumulative evaluated in x. All parameters
+    must have the same dimension.
+
+    Args:
+        x (Tensor): Where the cumulative if evaluated.
+        loc (Tensor): Expectation.
+        scale (Tensor): Scale
+
+    Returns:
+        Tensor: CDF(x, mu, scale)
+    """
+    return 0.5 - 0.5 * (x - loc).sign() * torch.expm1(-(x - loc).abs() / scale)
 
 
 class QuantizableModule(nn.Module):
@@ -55,13 +69,14 @@ class QuantizableModule(nn.Module):
         return self.net.params
 
     def set_param(self, param: Tensor):
-        self.net.params.copy_(param)
+        self.net.params[:] = param
     
     def fragment_param(self, param: Tensor) -> list[Tensor]:
         return torch.tensor_split(param, self.param_partitions)
 
     def save_full_precision_param(self):
-        self._full_precision_param = copy.deepcopy(self.get_param())
+        """Save the detach full precision parameters."""
+        self._full_precision_param = copy.deepcopy(self.get_param().detach())
 
     def get_full_precision_param(self) -> Tensor:
         return self._full_precision_param
@@ -79,18 +94,27 @@ class QuantizableModule(nn.Module):
             return rate_param
         
         param = self.fragment_param(self.get_param())  
-        for p, scale in zip(param, self._scale):
-
-            # compute their entropy.
-            distrib = Laplace(0., max(scale, 1e-5))
-            # print(f"p: {p.std()}, scale: {scale}")
-            # No value can cost more than 32 bits
-            proba = torch.clamp(distrib.cdf(p + 0.5) - distrib.cdf(p - 0.5), min=2 ** -32, max=None)
+        for p, mu, scale in zip(param, self._mu, self._scale):
+            # No value can cost more than 16 bits
+            proba = torch.clamp_min(laplace_cdf(p + 0.5, mu*scale, scale) - laplace_cdf(p - 0.5, mu*scale, scale), min=2 ** -16)
 
             rate_param += -torch.log2(proba).sum()
             
         return rate_param
-
+    
+    def forward(self, x: Tensor, quant: bool= False) -> Tensor:
+        if quant:
+            fp_param = self.fragment_param(self.get_full_precision_param())
+            params = []
+            for p, mu, scale in zip(fp_param, self._mu, self._scale):
+                sent_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
+                params.append((sent_param - mu) * scale)
+            
+            self.set_param(torch.cat(params).flatten().detach())
+        
+        return self.net(x)
+    
+    @torch.no_grad()
     def quantize(self):
         """Quantize the model. Should be called after all training steps."""
         fp_param = self.get_full_precision_param()
@@ -111,6 +135,7 @@ class QuantizableModule(nn.Module):
         
         self.save_quantized_precision_param(torch.cat(params).flatten())
 
+    @torch.no_grad()
     def dequantize(self):
         """Dequantize the model."""
         quant_param = self.get_quantized_precision_param()
@@ -122,15 +147,3 @@ class QuantizableModule(nn.Module):
             params.append((sent_param - mu) * scale)
 
         self.set_param(torch.cat(params).flatten())
-    
-    def forward(self, x: Tensor, quant: bool= False) -> Tensor:
-        if quant:
-            fp_param = self.fragment_param(self.get_full_precision_param().detach())
-            params = []
-            for p, mu, scale in zip(fp_param, self._mu, self._scale):
-                sent_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
-                params.append((sent_param - mu) * scale)
-            
-            self.set_param(torch.cat(params).flatten())
-        
-        return self.net(x)

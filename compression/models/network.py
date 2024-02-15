@@ -34,10 +34,3 @@ class QuantizableNetworkWithInputEncoding(QuantizableModule):
         flops_table.append(["Quantization", f"{len(self.param_partitions)}", ""])
 
         self.flops_str = tabulate(flops_table, headers=["module", "#parameters or shape", "#flops"], tablefmt="github")
-
-    def to_device(self, device):
-        self = self.to(device)
-        self.net.to(device)
-        self._scale.to(device)
-        self._mu.to(device)
-        self._q_scale.to(device)
