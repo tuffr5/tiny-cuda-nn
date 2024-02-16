@@ -49,6 +49,7 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         scale_i = model._scale[i]
         q_scale_i = model._q_scale[i]
         cur_bitstream_path = f'{bitstream_path}_{i}'
+        print(f"param_quant_i: {param_quant_i.max()}, {param_quant_i.min()}")
         range_coder.encode(
             cur_bitstream_path,
             param_quant_i,

@@ -1,5 +1,6 @@
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
+import copy
 import tinycudann as tcnn
 from models.quantizable import QuantizableModule
 from utils.misc import get_param_partitions, generate_param_index_list
@@ -14,6 +15,7 @@ class QuantizableNetworkWithInputEncoding(QuantizableModule):
         self.param_per_level = params_per_level
         self.param_per_layer = params_per_layer
         self.param_partitions = generate_param_index_list(params_per_level + params_per_layer)
+        self.num_params = sum(params_per_level) + sum(params_per_layer)
         
         # initialize quantization parameters
         self.init_quant_params()

@@ -71,10 +71,10 @@ def get_args():
     # model related args
     parser.add_argument("batch_size", nargs="?", default=2**18, help="batch size")
     parser.add_argument("lr", nargs="?", default=0.01, help="learning rate")
-    parser.add_argument("n_steps", nargs="?", default=10000, help="number of steps for on-the-fly-training")
+    parser.add_argument("n_steps", nargs="?", default=100, help="number of steps for on-the-fly-training")
     parser.add_argument("device", nargs="?", default="cuda", help="device to use")
     parser.add_argument("n_pixels", nargs="?", default=512*512, help="number of pixels in the image")
-    parser.add_argument("lmbda", nargs="?", default=0.002, help="lambda for RD cost")
+    parser.add_argument("lmbda", nargs="?", default=0.1, help="lambda for RD cost")
 
     args = parser.parse_args()
     return args
@@ -115,6 +115,9 @@ if __name__ == "__main__":
     trainer = Trainer(model, image, **vars(args))
     trainer.train()
 
+    # quantize model
+    model.quantize()
+
     # write to bitstream
     assert encode_frame(model, args.bitstream_path, img_shape, config)
 
@@ -122,7 +125,8 @@ if __name__ == "__main__":
     real_rate_bpp = real_rate_byte * 8 / args.n_pixels
     print(f'Real rate    [kBytes]: {real_rate_byte / 1000:9.3f}')
     print(f'Real rate       [bpp]: {real_rate_bpp :9.3f}')
-    print(f'Total encoding time elapsed {time.time() - start_time} s')
+    print(f'FP rate         [bpp]: {model.num_params * 32 /args.n_pixels :9.3f}')
+    print(f'Total encoding time elapsed {time.time() - start_time:.4f} s')
 
     with torch.no_grad():
         model.to(device)
@@ -140,21 +144,21 @@ if __name__ == "__main__":
         print(f"Writing '{path}'... ", end="")
         rec_image = model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy()
         write_image(path, rec_image)
-        print(f"Quantized Model   : {bench.compute_metrics((image_array* 255).astype('uint8'), (rec_image * 255).astype('uint8'), metrics=['psnr', 'ms-ssim'])}")
+        print(f" Quantized Model: {bench.compute_metrics((image_array* 255).astype('uint8'), (rec_image * 255).astype('uint8'), metrics=['psnr', 'ms-ssim'])}")
     print("done.")
     # clean up
     tcnn.free_temporary_memory()
 
     # try decoding
-    start_time = time.time()
-    dec_img = decode_frame(args.bitstream_path, device)
-    if args.result_filename:
-        print(f"Writing f'compression/results/{args.result_filename}.jpg'... ", end="")
-        write_image(
-            f'compression/results/{args.result_filename}.jpg',
-            dec_img.detach().cpu().numpy())
-        print("done.")
-    print(f'Total decoding time elapsed {time.time() - start_time} s')
+    # start_time = time.time()
+    # dec_img = decode_frame(args.bitstream_path, device)
+    # if args.result_filename:
+    #     print(f"Writing f'compression/results/{args.result_filename}.jpg'... ", end="")
+    #     write_image(
+    #         f'compression/results/{args.result_filename}.jpg',
+    #         dec_img.detach().cpu().numpy())
+    #     print("done.")
+    # print(f'Total decoding time elapsed {time.time() - start_time:.4f} s')
 
-    # clean up
-    tcnn.free_temporary_memory()
+    # # clean up
+    # tcnn.free_temporary_memory()
