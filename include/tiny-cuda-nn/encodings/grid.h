@@ -115,7 +115,11 @@ __global__ void kernel_grid(
 
 	auto grid_val = [&](const uvec<N_POS_DIMS>& local_pos) {
 		const uint32_t index = grid_index<N_POS_DIMS, HASH_TYPE>(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL;
-		return *(tvec<T, N_FEATURES_PER_LEVEL, PARAMS_ALIGNED ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)>*)&grid[index];
+		// return *(tvec<T, N_FEATURES_PER_LEVEL, PARAMS_ALIGNED ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)>*)&grid[index];
+		// duanbin: Apply divide_round_up to the value and multiply by 1/divisor (1 / 128)
+		float q_scale = 128;
+		float one = 1;
+    	return fma((T)one, (T)(one/q_scale), rint(fma((T)q_scale, (T)one, *(tvec<T, N_FEATURES_PER_LEVEL, PARAMS_ALIGNED ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)>*)&grid[index])));
 	};
 
 	if (interpolation_type == InterpolationType::Nearest) {

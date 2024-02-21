@@ -216,6 +216,18 @@ inline TCNN_DEVICE __half fma(__half a, __half b, __half c) {
 }
 #endif
 
+inline TCNN_HOST_DEVICE float rint(float a) { return rintf(a); }
+#ifdef __CUDACC__
+inline TCNN_DEVICE __half rint(__half a) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 600
+	return hrint(a);
+#else
+	return rintf(a);
+#endif
+}
+#endif
+
+
 #define TVEC tvec<T, N, A>
 #define BVEC tvec<bool, N, A>
 
@@ -253,6 +265,8 @@ CWISE_OP(fma, TVEC, fma(a[i], b, c), const TVEC& a, T b, T c)
 CWISE_OP(fma, TVEC, fma(a, b[i], c[i]), T a, const TVEC& b, const TVEC& c)
 CWISE_OP(fma, TVEC, fma(a, b[i], c), T a, const TVEC& b, T c)
 CWISE_OP(fma, TVEC, fma(a, b, c[i]), T a, T b, const TVEC& c)
+
+CWISE_OP(rint, TVEC, rint(a[i]), const TVEC& a)
 
 CWISE_OP(min, TVEC, min(a[i], b[i]), const TVEC& a, const TVEC& b)
 CWISE_OP(min, TVEC, min(a[i], b), const TVEC& a, T b)
@@ -366,6 +380,8 @@ TCNN_DEVICE type_result operation(__VA_ARGS__) { \
 	} \
 	return result; \
 }
+
+HALF_CWISE_OP(rint, HVEC, h2rint(*(__half2*)&a[i]), const HVEC& a)
 
 HALF_CWISE_OP(fma, HVEC, __hfma2(*(__half2*)&a[i], *(__half2*)&b[i], *(__half2*)&c[i]), const HVEC& a, const HVEC& b, const HVEC& c)
 HALF_CWISE_OP(fma, HVEC, __hfma2(*(__half2*)&a[i], *(__half2*)&b[i], __half2half2(c)),  const HVEC& a, const HVEC& b, __half c)
