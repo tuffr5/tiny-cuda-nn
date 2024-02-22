@@ -86,6 +86,11 @@ __device__ void threadblock_layer(Activation activation, __half* __restrict__ ac
 			// load the weights in transposed form.
 			wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16 * i * WIDTH + weights_col, WIDTH);
 		} else {
+			// duanbin: quantization and dequantization
+			TCNN_PRAGMA_UNROLL
+			for (uint32_t idx = 0; idx < 16 * i + weights_col * WIDTH; ++idx) {
+				*(__half*)&weights_this_layer[idx] = hrint(*(__half*)&weights_this_layer[idx] * __float2half(128.0f)) / __float2half(128.0f);
+			}
 			wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16 * i + weights_col * WIDTH, WIDTH);
 		}
 	}
@@ -353,6 +358,8 @@ __device__ void threadblock_input_layer_forward_dynamic(Activation activation, _
 	TCNN_PRAGMA_UNROLL
 	for (uint32_t idx = thread_elem_idx; idx < n_elems_b; idx += n_elems_per_load) {
 		const uint32_t idx_skewed = idx + idx / in_width * INPUT_SKEW;
+		// duanbin: quantization and dequantization
+		*(__half*)&weights_this_layer[idx] = hrint(*(__half*)&weights_this_layer[idx] * __float2half(128.0f)) / __float2half(128.0f);
 		*(int4*)&weights_shmem[idx_skewed] = *(int4*)&weights_this_layer[idx];
 	}
 
@@ -447,6 +454,11 @@ __device__ void threadblock_last_layer_forward(Activation activation, __half* __
 	// Load weight matrix into shared memory for the last multiplication.
 	// Loading into shared memory as opposed to directly into registers is faster
 	// because unlike in the previous layers, each warp uses the same entries of the weight matrix.
+	// duanbin: quantization and dequantization
+	TCNN_PRAGMA_UNROLL
+	for (uint32_t idx = 0; idx < weights_row + weights_col * WIDTH; ++idx) {
+		*(__half*)&weights_this_layer[idx] = hrint(*(__half*)&weights_this_layer[idx] * __float2half(128.0f)) / __float2half(128.0f);
+	}
 	*(int4*)&weights_shmem[weights_row + weights_col * (WIDTH + SKEW)] = *(int4*)&weights_this_layer[weights_row + weights_col * WIDTH];
 
 	__syncthreads();
