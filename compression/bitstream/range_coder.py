@@ -13,7 +13,7 @@ from torch import Tensor
 from utils.misc import Q_PROBA_DEFAULT
 
 class RangeCoder:
-    def __init__(self, AC_MAX_VAL: int, Q_PROBA: int = Q_PROBA_DEFAULT):
+    def __init__(self, AC_MAX_VAL: int, Q_PROBA = Q_PROBA_DEFAULT):
 
         # Higher: more accurate but less reliable probability model
         # Actual q_step is 1 / Q_PROBA
@@ -22,8 +22,8 @@ class RangeCoder:
         # Data are in [0, AC_MAX_VAL]
         self.AC_MAX_VAL = AC_MAX_VAL
 
-        self.alphabet = np.arange(0, self.AC_MAX_VAL)
-        self.model_family = constriction.stream.model.QuantizedLaplace(0, self.AC_MAX_VAL)
+        self.alphabet = np.arange(-self.AC_MAX_VAL, self.AC_MAX_VAL + 1)
+        self.model_family = constriction.stream.model.QuantizedLaplace(-self.AC_MAX_VAL, self.AC_MAX_VAL + 1)
 
     def quantize_proba_parameters(self, x: Tensor) -> Tensor:
         """Apply a quantization to the input x to reduce floating point

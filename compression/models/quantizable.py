@@ -1,170 +1,97 @@
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
-import copy
 import math
 import torch
-from typing import Optional
-from torch import nn, Tensor
+import torch.nn.functional as F
+import tinycudann as tcnn
+from torch.distributions import Laplace
 from utils.misc import AC_MAX_VAL
 
 
-def round_ste(x: torch.Tensor):
-    """
-    Implement Straight-Through Estimator for rounding operation.
-    """
-    return (x.round() - x).detach() + x
-
-
-def laplace_cdf(x: Tensor, loc: Tensor, scale: Tensor) -> Tensor:
-    """Compute the laplace cumulative evaluated in x. All parameters
-    must have the same dimension.
-
-    Args:
-        x (Tensor): Where the cumulative if evaluated.
-        loc (Tensor): Expectation.
-        scale (Tensor): Scale
-
-    Returns:
-        Tensor: CDF(x, mu, scale)
-    """
+def laplace_cdf(x, loc, scale):
     return 0.5 - 0.5 * (x - loc).sign() * torch.expm1(-(x - loc).abs() / scale)
 
 
-class QuantizableModule(nn.Module):
-    """Base class for quantizable modules. It provides the basic functionalities."""
+def get_mu_scale(raw_proba_param):
+    mu, log_scale = [tmp.view(-1) for tmp in torch.split(raw_proba_param, 1, dim=1)]
+    print(f"mu: {mu.amin()}, {mu.amax()}")
+    print(f"log_scale: {log_scale.amin()}, {log_scale.amax()}")
+    scale = torch.exp(-0.5 * torch.clamp(log_scale, min=-10., max=13.8155))
+    return mu, scale
+
+
+def get_grid_context(grid, n_context):
+    """pad the grid to the right size"""
+    grid_context = torch.zeros((grid.shape[0], n_context), device=grid.device)
+    grid_context[::2] =  F.pad(grid[::2], pad=(n_context, 0), mode='constant', value=-1.0).unfold(0, n_context, 1)[:-1]
+    grid_context[1::2] = F.pad(grid[1::2], pad=(n_context, 0), mode='constant', value=1.0).unfold(0, n_context, 1)[:-1]
+    
+    return grid_context
+
+
+class QModule:
     def __init__(self):
-        super().__init__()
+        self.fpfm = None
 
-        self.net = None
-        self.net_shadow = None
-
-        # full precision parameters used in model (-1, 1)
-        self._full_precision_param: Optional[list] = None
-        # quantized parameters used in entropy coding (0, AC_MAX_VAL)
-        self._quantized_precision_param: Optional[list] = None
-        
-        # quantization parameters for each level
-        self._mu: Optional[nn.Parameter] = None
-        self._scale: Optional[nn.Parameter] = None
-        
-        # used in entropy coding
-        self._q_scale: Optional[nn.Parameter] = None
-
-        self.param_partitions: Optional[list] = None
-
-    def init_quant_params(self, fp_params: Optional[list] = None):
-        assert self.param_partitions is not None, 'You must initialize the parameter partitions before initializing the quantization parameters.'
-        if fp_params is not None:
-            fp_params = fp_params.detach().clone()
-            params = self.fragment_param(fp_params)
-            for i, p in enumerate(params):
-                if p.min() < 0:
-                    p_min = -p.abs().max()
-                else:
-                    p_min = 0
-                self._scale[i] = (p.abs().max() - p_min) / AC_MAX_VAL
-            self._mu[:] = (-p_min / self._scale).round_()
-        else:
-            self._scale = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=True)
-            self._mu = nn.Parameter(torch.rand(len(self.param_partitions), 1), requires_grad=False)
-
-        self._q_scale = nn.Parameter(torch.rand(len(self._mu), 1), requires_grad=False)
-
-    def get_param(self) -> Tensor:
-        return self.net.params.clone()
-
-    def set_param(self, param: Tensor):
-        self.net.params = nn.Parameter(param)
-    
-    def fragment_param(self, param: Tensor) -> list[Tensor]:
-        return torch.tensor_split(param, self.param_partitions)
-
-    def save_full_precision_param(self):
-        """Save the detach full precision parameters."""
-        self._full_precision_param = self.get_param()
-
-    def get_full_precision_param(self) -> Tensor:
-        return self._full_precision_param
-    
-    def save_quantized_precision_param(self, param: Tensor):
-        self._quantized_precision_param = param
-
-    def get_quantized_precision_param(self) -> Tensor:    
-        return self._quantized_precision_param
-    
-    def sync_shadow(self):
-        self.net_shadow = copy.deepcopy(self.net)
-
-    def measure_laplace_rate(self) -> float:     
-        rate = 0.
-
-        if self._mu is None or self._scale is None:
-            return rate
-        
-        param = self.fragment_param(self.get_param())  
-        for p, mu, scale in zip(param, self._mu, self._scale):
-            # No value can cost more than 16 bits
-            proba = torch.clamp_min(laplace_cdf(p + 0.5, mu*scale, scale) - laplace_cdf(p - 0.5, mu*scale, scale), min=2 ** -16)
-
-            rate += -torch.log2(proba).sum()
-            
-        return rate
-    
-    def forward(self, x: Tensor, quant: bool= False) -> Tensor:
-        if quant:
-            self.sync_shadow()
-            cur_param = self.fragment_param(self.get_param())
-
-            rate = 0.
-            params = []
-            scale_grad = []
-            for p, mu, scale in zip(cur_param, self._mu, self._scale):
-                # autograd for rate loss
-                proba = torch.clamp_min(laplace_cdf(p + 0.5, mu*scale, scale) - laplace_cdf(p - 0.5, mu*scale, scale), min=2 ** -16)
-                rate += -torch.log2(proba).sum()
-
-                # we will calulate the gradient of scale manually
-                p = p.detach().clone()
-                scale = scale.detach().clone()
-                quant_param = (round_ste(p / scale) + mu).clamp(0, AC_MAX_VAL)
-                params.append((quant_param - mu) * scale)
-                scale_grad.append((round_ste(p / scale) - p / scale).mean())
-            
-            # hack: autograd the modified parameters regards to l2 loss
-            self.net_shadow.params = nn.Parameter(torch.cat(params).flatten())
-            
-            return self.net_shadow(x), rate, torch.tensor(scale_grad, device=x.device).unsqueeze(1)
-        
-        return self.net(x)
+    def measure_laplace_rate(self):
+        raise NotImplementedError("Subclass must implement this method")
     
     @torch.no_grad()
     def quantize(self):
-        """Quantize the model. Should be called after all training steps."""
-
-        # this param is actually quantized and dequantized
-        param = self.get_param()
-
-        param = self.fragment_param(param)
-        params = []
-        for i, p, mu, scale in zip(range(len(self._mu)), param, self._mu, self._scale):
-            quant_param = ((p / scale).round() + mu).clamp(0, AC_MAX_VAL)
-
-            # save q_scale for entropy coding
-            self._q_scale[i] = p.std() / scale
-
-            params.append(quant_param)
-        
-        self.save_quantized_precision_param(torch.cat(params).flatten())
+        for p in self.parameters():
+            p.data = (p.data / self.fpfm).round() * self.fpfm
+    
+    @torch.no_grad()
+    def prestep_for_entropy_encoding(self):
+        for p in self.parameters():
+            p.data = (p.data / self.fpfm).round().clamp(-AC_MAX_VAL, AC_MAX_VAL+1)
 
     @torch.no_grad()
-    def dequantize(self):
-        """Dequantize the model. Make sure run quantize() before dequantize()."""
-        sent_param = self.get_quantized_precision_param()
-        assert sent_param is not None, 'You must quantize the model before dequantizing it. '\
-            'Use model.quantize().'
-        sent_param = self.fragment_param(sent_param)
-        params = []
-        for quant_param, mu, scale in zip(sent_param, self._mu, self._scale):
-            params.append((quant_param - mu) * scale)
+    def poststep_for_entropy_decoding(self):
+        for p in (self.parameters()):
+            p.data = p * self.fpfm
 
-        self.set_param(torch.cat(params).flatten())
+    def get_acmax_and_scale(self):
+        return (int(self.params.abs().max().item()), self.params.std().item() / math.sqrt(2))
+    
+    def set_params(self, params):
+        self.params.data = params
+        
+
+class QGrid(QModule, tcnn.Encoding):
+    def __init__(self, n_input_dims, config):
+        QModule.__init__(self)
+        tcnn.Encoding.__init__(self, n_input_dims, config)
+        self.config = config
+        self.fpfm = 1.0 / 16.0
+
+    def measure_laplace_rate(self, x, raw_proba_param):
+        mu, scale = get_mu_scale(raw_proba_param)
+        print(f"estimated mu: {mu}, estimated scale: {scale}")
+        proba = torch.clamp_min(
+            laplace_cdf(x + 0.5, mu, scale) - laplace_cdf(x - 0.5, mu, scale),
+            min=2 ** -16
+            )
+        rate = -torch.log2(proba).sum()
+        return rate
+
+
+class QNetwork(QModule, tcnn.Network):
+    def __init__(self, n_input_dims, n_output_dims, config):
+        QModule.__init__(self)
+        tcnn.Network.__init__(self, n_input_dims, n_output_dims, config)
+        self.config = config
+        self.fpfm = 1.0 / 128.0
+    
+    def measure_laplace_rate(self):
+        param = self.params.clone()
+        param = param / self.fpfm # actually doing quantization here
+        distrib = Laplace(0., max(param.std() / math.sqrt(2), 1.0 / 1024.0))
+        proba = torch.clamp(
+            distrib.cdf(param + 0.5) - distrib.cdf(param - 0.5), 
+            min=2 ** -32, 
+            max=None
+            )
+        rate = -torch.log2(proba).sum()
+            
+        return rate

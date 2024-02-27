@@ -4,13 +4,11 @@
 import torch
 from typing import Tuple
 
-MAX_PARAM_SHAPE = 2**16 # maximum number of elements in a tensor
 MAX_NN_BYTES = 2**16 # maximum number of bytes in a neural network layer
-MAX_HASH_LEVEL_BYTES = 2**24 # maximum number of bytes in a hash level
-QUANT_BITDEPTH = 4 # QUANT_BITDEPTH quantization
+QUANT_BITDEPTH = 16 # QUANT_BITDEPTH quantization
 AC_MAX_VAL = 2 ** QUANT_BITDEPTH - 1 # maximum value for signed QUANT_BITDEPTH quantization
 
-Q_PROBA_DEFAULT = 128.0
+Q_PROBA_DEFAULT = 1024.0
 
 
 _ENCODING_TYPE = [
@@ -179,5 +177,3 @@ def get_param_partitions(encoding_config: dict, network_config: dict, n_output_d
     # return generate_param_index_list(elements_count_list)
 
     return params_per_level.tolist(), params_per_layer
-
-        

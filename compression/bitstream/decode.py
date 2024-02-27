@@ -8,14 +8,9 @@ from torch import Tensor
 from bitstream.header import read_frame_header
 from bitstream.range_coder import RangeCoder
 from models.network import QuantizableNetworkWithInputEncoding
-from utils.misc import (
-    generate_input_grid, 
-    AC_MAX_VAL, 
-    MAX_HASH_LEVEL_BYTES,
-    MAX_NN_BYTES, 
-    MAX_PARAM_SHAPE,
-    get_num_levels
-    )
+from models.quantizable import get_mu_scale
+from utils.misc import generate_input_grid
+import numpy as np
 
 
 @torch.no_grad()
@@ -52,27 +47,39 @@ def decode_frame(
     #   3. Send it to the requested device.
                 
     # initialize empty model
+    arm_config = header_info.get('arm_configs')
+    arm_config['n_contexts'] = header_info.get('n_contexts')
     model = QuantizableNetworkWithInputEncoding(
         n_input_dims=2,
         n_output_dims=header_info.get('img_size')[-1],
         encoding_config=header_info.get('encoding_configs'),
-        network_config=header_info.get('network_configs')
+        network_config=header_info.get('network_configs'),
+        arm_config=arm_config
     )
-    # =========================== Decode the encoding and network ============ #
-    params = []
-    range_coder = RangeCoder(AC_MAX_VAL = AC_MAX_VAL)
-    for i, (shape_i, mu_i, scale_i, q_scale_i, n_bytes_i) in enumerate(header_info.get("shape_mu_scale_and_n_bytes")):
-        # hack back
-        shape_i = MAX_PARAM_SHAPE if shape_i == 0 else shape_i
-        limitation = MAX_HASH_LEVEL_BYTES if i < get_num_levels(header_info.get('encoding_configs')) else MAX_NN_BYTES
-        n_bytes_i = limitation if n_bytes_i == 0 else n_bytes_i
+    n_contexts = header_info.get('n_contexts')
+    for module_name, (acmax_i, scale_i, n_bytes_i) in zip(model.modules_to_send, header_info.get("acmax_scale_and_n_bytes")):
+        range_coder = RangeCoder(AC_MAX_VAL = acmax_i)
         range_coder.load_bitstream(bitstream[:n_bytes_i])
-        param_quant_i = range_coder.decode(mu_i * torch.ones(shape_i), q_scale_i * torch.ones(shape_i))
-        param_quant_i = (param_quant_i - mu_i) * scale_i 
-        params.append(param_quant_i)
-        bitstream = bitstream[n_bytes_i:]
+        weights = getattr(model, module_name).params.data
+        shape_ = weights.shape[0]
+        if module_name == 'grid':
+            weights = torch.zeros(shape_ + n_contexts)
+            for i in range(shape_):
+                cur_context = weights[i:i+n_contexts]
+                cur_context = cur_context.unsqueeze_(0).to(device)
+                raw_proba_param = model.arm(cur_context)
+                cur_mu, cur_scale = get_mu_scale(raw_proba_param)
+                cur_grid = range_coder.decode(cur_mu.cpu(), cur_scale.cpu())
+                weights[n_contexts+i] = cur_grid
+                
+            weights = weights[n_contexts:]
+            weights = weights.to(device)
+        else:
+            weights = range_coder.decode(torch.zeros_like(weights.cpu()), torch.ones_like(weights.cpu()) * scale_i).to(device) 
 
-    model.set_param(torch.cat(params).flatten())
+        getattr(model, module_name).set_params(weights)
+        getattr(model, module_name).poststep_for_entropy_decoding()
+        bitstream = bitstream[n_bytes_i:]
 
     xy = generate_input_grid(header_info.get('img_size'), device)
 

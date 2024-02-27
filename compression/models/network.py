@@ -1,38 +1,63 @@
 # @Author: Bin Duan <bduan2@hawk.iit.edu>
 
+import torch
+import math
 import copy
-import tinycudann as tcnn
-from models.quantizable import QuantizableModule
-from utils.misc import get_param_partitions, generate_param_index_list
-from tabulate import tabulate
+from models.quantizable import QNetwork, QGrid, get_grid_context, get_mu_scale
+from models.quantizer import NoiseQuantizer, STEQuantizer
 
 
-class QuantizableNetworkWithInputEncoding(QuantizableModule):
-    def __init__(self, n_input_dims, n_output_dims, encoding_config, network_config):
+class QuantizableNetworkWithInputEncoding(torch.nn.Module):
+    def __init__(self, n_input_dims, n_output_dims, encoding_config, network_config, arm_config):
         super().__init__()
-        self.net = tcnn.NetworkWithInputEncoding(n_input_dims, n_output_dims, encoding_config, network_config)
-        params_per_level, params_per_layer = get_param_partitions(encoding_config, network_config, n_output_dims)
-        self.param_per_level = params_per_level
-        self.param_per_layer = params_per_layer
-        self.param_partitions = generate_param_index_list(params_per_level + params_per_layer)
-        self.num_params = sum(params_per_level) + sum(params_per_layer)
-        
-        # initialize quantization parameters
-        self.init_quant_params()
+        self.grid = QGrid(n_input_dims, encoding_config)
+        self.grid_shadow = torch.nn.Parameter(torch.zeros_like(self.grid.params))
+        self.net = QNetwork(self.grid.n_output_dims, n_output_dims, network_config)
+        self.arm = QNetwork(arm_config["n_contexts"], 2, arm_config) # arm_config["n_contexts"] is the number of context points
+        self.noise_quantizer = NoiseQuantizer()
+        self.ste_quantizer = STEQuantizer()
 
-        assert max(self.param_partitions) == sum(p.numel() for p in self.net.parameters() if p.requires_grad), \
-            f"Parameter partitions {max(self.param_partitions)} do not match num of parameters in model {sum(p.numel() for p in self.net.parameters() if p.requires_grad)}"
+        self.modules_to_send = ['arm', 'net', 'grid']
 
-        self.param_counts = params_per_level + params_per_layer # number of parameters for each level
-        self.param_partitions = self.param_partitions[:-1]  # remove the last element, which is the total number of parameters
+    def _sync_grid(self):
+        self.grid_shadow.data = copy.deepcopy(self.grid.params.data)
 
+    def quantize_model(self):
+        self.net.quantize()
+        self.arm.quantize()
 
-    def get_flops_str(self):
-        flops_table = []
-        for i in range(len(self.params_per_level)):
-            flops_table.append([f"Enc level {i}", f"{self.params_per_level[i]}", ""])
-        for i in range(len(self.params_per_layer)):
-            flops_table.append([f"MLP Layer {i}", f"{self.params_per_layer[i]}", f"{2 * self.params_per_layer[i]}"])
-        flops_table.append(["Quantization", f"{len(self.param_partitions)}", ""])
+    def prestep_for_entropy_encoding(self):
+        # return grid, mu, scale before entropy encoding
+        grid = self.grid.params.detach().clone()
+        grid = torch.round(grid / self.grid.fpfm)
+        print(f"grid: {grid.amin()}, {grid.amax()}")
+        grid_context = get_grid_context(grid, self.arm.config["n_contexts"])
+        raw_proba_param = self.arm(grid_context).to(grid_context.dtype)
+        mu, scale = get_mu_scale(raw_proba_param)
 
-        self.flops_str = tabulate(flops_table, headers=["module", "#parameters or shape", "#flops"], tablefmt="github")
+        for module_name in self.modules_to_send:
+            getattr(self, module_name).prestep_for_entropy_encoding()
+
+        return grid.cpu(), mu.cpu(), scale.cpu()
+
+    def forward(self, x, training=False, STE=False):
+        if training:
+            self._sync_grid()
+            if STE:
+                grid = self.ste_quantizer(self.grid_shadow / self.grid.fpfm)
+            else:
+                grid = self.noise_quantizer(self.grid_shadow / self.grid.fpfm)
+
+            grid_context = get_grid_context(grid, self.arm.config["n_contexts"])
+            raw_proba_param = self.arm(grid_context)
+            
+            rate = 0.
+            for module_name in self.modules_to_send:
+                if module_name == 'grid':
+                    rate += getattr(self, module_name).measure_laplace_rate(grid, raw_proba_param)
+                else:
+                    rate += getattr(self, module_name).measure_laplace_rate()
+
+            return self.net(self.grid(x)), rate
+        else:
+            return self.net(self.grid(x))

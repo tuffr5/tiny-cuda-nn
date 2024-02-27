@@ -4,20 +4,11 @@
 import os
 import subprocess
 import torch
-import math
+import numpy as np
 
 from bitstream.header import write_frame_header
 from bitstream.range_coder import RangeCoder
 from typing import Tuple
-from utils.misc import (
-    get_num_layers, 
-    get_num_levels, 
-    MAX_HASH_LEVEL_BYTES,
-    MAX_NN_BYTES, 
-    AC_MAX_VAL, 
-    MAX_PARAM_SHAPE
-    )
-
 
 @torch.no_grad()
 def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], config: dict):
@@ -29,43 +20,31 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
     """
 
     torch.use_deterministic_algorithms(True)
-
+    # After this: all params are quantized and are ready to be sent
+    grid, mu, scale = model.prestep_for_entropy_encoding()
     model.eval()
     model.to('cpu')
 
     subprocess.call(f'rm -f {bitstream_path}', shell=True)
 
     # ================= Encode encoding and network params into a bitstream file ================ #
-    shape_mu_scale_and_n_bytes = []
-    range_coder = RangeCoder(AC_MAX_VAL=AC_MAX_VAL)
-    for i, pp_i, param_quant_i in zip(range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])), 
-                                      model.param_counts, 
-                                      model.fragment_param(model.get_quantized_precision_param().cpu())):
-        
-        if pp_i > MAX_PARAM_SHAPE:
-            raise ValueError(f"Found param shape {pp_i} exceeds the maximum allowed {MAX_PARAM_SHAPE}")
-        
-        mu_i = model._mu[i]
-        scale_i = model._scale[i]
-        q_scale_i = model._q_scale[i]
-        cur_bitstream_path = f'{bitstream_path}_{i}'
-        print(f"param_quant_i: {param_quant_i.max()}, {param_quant_i.min()}")
-        range_coder.encode(
-            cur_bitstream_path,
-            param_quant_i,
-            mu_i * torch.ones(pp_i),
-            q_scale_i * torch.ones(pp_i)
-        )
-
-        n_bytes_i = os.path.getsize(cur_bitstream_path)
-        limitation = MAX_HASH_LEVEL_BYTES if i < get_num_levels(config["encoding"]) else MAX_NN_BYTES
-        if n_bytes_i > limitation:
-            raise ValueError(f"Found number of bytes {n_bytes_i} exceeds the maximum allowed {limitation}")
-        
-        # hack to encode 65536 to 0
-        pp_i = 0 if pp_i == MAX_PARAM_SHAPE else pp_i
-        n_bytes_i = 0 if n_bytes_i == limitation else n_bytes_i
-        shape_mu_scale_and_n_bytes.append((pp_i, mu_i.item(), scale_i.item(), q_scale_i.item(), n_bytes_i))
+    acmax_scale_and_n_bytes = []
+    for module_name in model.modules_to_send:
+        acmax_i, scale_i = getattr(model, module_name).get_acmax_and_scale()
+        range_coder = RangeCoder(AC_MAX_VAL=acmax_i)
+        cur_bitstream_path = f'{bitstream_path}_{module_name}'
+        if module_name == 'grid':
+            scale_i = 0 # placeholder not used
+            range_coder.encode(cur_bitstream_path, grid, mu, scale)
+        else:
+            weights = getattr(model, module_name).params
+            range_coder.encode(
+                cur_bitstream_path,
+                weights,
+                torch.zeros_like(weights),
+                scale_i * torch.ones_like(weights)
+            )
+        acmax_scale_and_n_bytes.append((acmax_i, scale_i, os.path.getsize(cur_bitstream_path)))
 
     # Write the header
     header_path = f'{bitstream_path}_header'
@@ -73,7 +52,7 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         header_path,
         img_size,
         config,
-        shape_mu_scale_and_n_bytes
+        acmax_scale_and_n_bytes
     )
 
     if success:
@@ -82,8 +61,8 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         subprocess.call(f'cat {header_path} >> {bitstream_path}', shell=True)
         subprocess.call(f'rm -f {header_path}', shell=True)
 
-        for i in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
-            cur_bitstream_path = f'{bitstream_path}_{i}'
+        for module_name in model.modules_to_send:
+            cur_bitstream_path = f'{bitstream_path}_{module_name}'
             subprocess.call(f'cat {cur_bitstream_path} >> {bitstream_path}', shell=True)
             subprocess.call(f'rm -f {cur_bitstream_path}', shell=True)
 
@@ -91,8 +70,8 @@ def encode_frame(model, bitstream_path: str, img_size: Tuple[int, int, int], con
         # remove intermediate bitstream
         subprocess.call(f'rm -f {header_path}', shell=True)
 
-        for i in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
-            cur_bitstream_path = f'{bitstream_path}_{i}'
+        for module_name in model.modules_to_send:
+            cur_bitstream_path = f'{bitstream_path}_{module_name}'
             subprocess.call(f'cat {cur_bitstream_path} >> {bitstream_path}', shell=True)
             subprocess.call(f'rm -f {cur_bitstream_path}', shell=True)
 

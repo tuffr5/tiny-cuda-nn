@@ -15,33 +15,22 @@ Header for the image compressed bitstream:
     [Image height]                                  2 bytes
     [Image width]                                   2 bytes
     [Number of Image channels]                      1 byte
+    [Number of Context points]                      1 byte
     [Number of bytes used for encoding configs]     1 byte
     [Number of bytes used for network configs]      1 byte
+    [Number of bytes used for arm configs]          1 byte
     
-    # ======================== ENCODING STUFF ======================== #
-    [param shape for level 0]                       2 bytes (less than MAX_PARAM_SHAPE)
-    [mu for level 0]                                1 byte
-    [scale for level 0]                             4 bytes (float)
-    [scale for quantized level 0]                   4 bytes (float)
-    [Number of bytes used for level 0]              3 bytes (less than MAX_NN_BYTES)
-    ...
-    [param shape for level N - 1]                   2 bytes
-    [mu for level N - 1]                            1 byte
-    [scale for level N - 1]                         4 bytes (float)
-    [scale for quantized level N - 1]               4 bytes (float)
-    [Number of bytes used for level N - 1]          3 bytes
-    # ======================== NETWORK STUFF ======================== #
-    [param shape for layer 0]                       2 bytes (less than MAX_PARAM_SHAPE)
-    [mu for layer 0]                                1 bytes
-    [scale for layer 0]                             4 bytes (float)
-    [scale for quantized layer 0]                   4 bytes (float)
-    [Number of bytes used for layer 0]              2 bytes (less than MAX_NN_BYTES)
-    ...
-    [param shape for layer M - 1]                   2 bytes
-    [mu for layer M - 1]                            1 bytes
-    [scale for layer M - 1]                         4 bytes (float)
-    [scale for quantized layer M - 1]               4 bytes (float)
-    [Number of bytes used for layer M - 1]          2 bytes 
+    # ======================== ARM STUFF =========================== #
+    [AC_MAX_VAL]                                    2 bytes
+    [scale]                                         4 bytes (float)
+    [Number of bytes used for network]              2 bytes 
+    # ======================== NETWORK STUFF ======================= #
+    [AC_MAX_VAL]                                    2 bytes
+    [scale]                                         4 bytes (float)
+    [Number of bytes used for network]              2 bytes 
+    # ======================== ENCODING STUFF ====================== #
+    [AC_MAX_VAL]                                    2 bytes
+    [Number of bytes used for encoding]             4 bytes
     ? ======================== FRAME HEADER ======================== ?
 
 """
@@ -182,16 +171,18 @@ def read_network_config(bitstream: bytes) -> dict:
 class FrameHeader(TypedDict):
     n_bytes_header: int  # Number of bytes for the header
     img_size: Tuple[int, int, int]  # Format: (HWC)
+    n_contexts: int  # Number of context points
     encoding_configs: dict  # _ENCODING_CONFIG
     network_configs: dict  # _NETWORK_CONFIG
-    shape_mu_scale_and_n_bytes: list[Tuple]  # List of (shape, mu, scale, bytes) for each encoding level
+    arm_configs: dict  # _ARM_CONFIG
+    acmax_scale_and_n_bytes: list[Tuple]  # List of (acmax, scale, bytes)
 
 
 def write_frame_header(
     header_path: str,
     img_size: Tuple[int, int, int],
     config: dict,
-    shape_mu_scale_and_n_bytes: list[Tuple]
+    acmax_scale_and_n_bytes: list[Tuple]
 ):
     """Write a frame header to a a file located at <header_path>.
     The structure of the header is described above.
@@ -201,19 +192,25 @@ def write_frame_header(
     n_bytes_header += 2  # Image height
     n_bytes_header += 2  # Image width
     n_bytes_header += 1  # Image channel
+    n_bytes_header += 1  # Number of context points
 
+    n_bytes_header += 1  # Number of bytes of arm configs
+    n_bytes_header += 1  # Number of bytes of network configs
     n_bytes_header += 1  # Number of bytes of encoding configs
-    n_bytes_header += 1  # Number of bytes of Network configs
 
-    # encoding stuff
-    n_bytes_encoding_config, tmp_byte_encoding = write_encoding_config(config["encoding"])
-    n_bytes_header += n_bytes_encoding_config
+    # arm stuff
+    n_bytes_arm_config, tmp_byte_arm = write_network_config(config["arm"])
+    n_bytes_header += n_bytes_arm_config
+
     # network stuff
     n_bytes_network_config, tmp_byte_network = write_network_config(config["network"])
     n_bytes_header += n_bytes_network_config
 
-    for i in range(get_num_levels(config["encoding"]) + get_num_layers(config["network"])):
-        n_bytes_header += 14 if i < get_num_levels(config["encoding"]) else 13
+    # encoding stuff
+    n_bytes_encoding_config, tmp_byte_encoding = write_encoding_config(config["encoding"])
+    n_bytes_header += n_bytes_encoding_config
+
+    n_bytes_header += 8 + 8 + 6 # 8 for arm, 8 for network, 6 for encoding
 
     byte_to_write = b""
     byte_to_write += n_bytes_header.to_bytes(2, byteorder="big", signed=False)
@@ -221,21 +218,25 @@ def write_frame_header(
     byte_to_write += img_size[1].to_bytes(2, byteorder="big", signed=False)
     byte_to_write += img_size[2].to_bytes(1, byteorder="big", signed=False)
 
-    byte_to_write += n_bytes_encoding_config.to_bytes(1, byteorder="big", signed=False)
-    byte_to_write += tmp_byte_encoding
+    n_contexts = config["arm"]["n_contexts"]
+    byte_to_write += n_contexts.to_bytes(1, byteorder="big", signed=False)
+
+    byte_to_write += n_bytes_arm_config.to_bytes(1, byteorder="big", signed=False)
+    byte_to_write += tmp_byte_arm
 
     byte_to_write += n_bytes_network_config.to_bytes(1, byteorder="big", signed=False)
     byte_to_write += tmp_byte_network
 
-    for i, (shape_i, mu_i, scale_i, q_scale_i, n_bytes_i) in enumerate(shape_mu_scale_and_n_bytes):
-        byte_to_write += shape_i.to_bytes(2, byteorder="big", signed=False)
-        byte_to_write += int(mu_i).to_bytes(1, byteorder="big", signed=False)
-        byte_to_write += struct.pack("f", scale_i)
-        byte_to_write += struct.pack("f", q_scale_i)
-        if i < get_num_levels(config["encoding"]):
-            byte_to_write += n_bytes_i.to_bytes(3, byteorder="big", signed=False)
-        else:
+    byte_to_write += n_bytes_encoding_config.to_bytes(1, byteorder="big", signed=False)
+    byte_to_write += tmp_byte_encoding
+
+    for i, (acmax_i, scale_i, n_bytes_i) in enumerate(acmax_scale_and_n_bytes):
+        byte_to_write += acmax_i.to_bytes(2, byteorder="big", signed=False)
+        if i < 2: # net and arm
+            byte_to_write += struct.pack("f", scale_i)
             byte_to_write += n_bytes_i.to_bytes(2, byteorder="big", signed=False)
+        else: # encoding
+            byte_to_write += n_bytes_i.to_bytes(4, byteorder="big", signed=False)
 
     with open(header_path, "wb") as fout:
         fout.write(byte_to_write)
@@ -250,7 +251,8 @@ def write_frame_header(
     print('------------------------------')
     print(f'"n_bytes_header": {n_bytes_header}')
     print(f'"img_size": {img_size}')
-    print(f'"shape_mu_scale_and_n_bytes": {shape_mu_scale_and_n_bytes}')
+    print(f'"n_contexts": {n_contexts}')
+    print(f'"acmax_scale_and_n_bytes": {acmax_scale_and_n_bytes}')
     print('         ------------------------')
 
     return True
@@ -271,11 +273,15 @@ def read_frame_header(header_bytes: bytes) -> FrameHeader:
     )
     ptr += 5
 
-    # Read encoding configuration
-    n_bytes_encoding_config = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
+    n_contexts = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
     ptr += 1
-    encoding_configs = read_encoding_config(header_bytes[ptr:ptr + n_bytes_encoding_config])
-    ptr += n_bytes_encoding_config
+
+    # Read arm configuration
+    n_bytes_arm_config = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
+    ptr += 1
+    arm_configs = read_network_config(header_bytes[ptr:ptr + n_bytes_arm_config])
+    arm_configs["n_contexts"] = n_contexts
+    ptr += n_bytes_arm_config
 
     # Read network configuration
     n_bytes_network_config = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
@@ -283,30 +289,35 @@ def read_frame_header(header_bytes: bytes) -> FrameHeader:
     network_configs = read_network_config(header_bytes[ptr:ptr + n_bytes_network_config])
     ptr += n_bytes_network_config
 
-    shape_mu_scale_and_n_bytes = []
-    for i in range(get_num_levels(encoding_configs) + get_num_layers(network_configs)):
-        shape_i = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
+    # Read encoding configuration
+    n_bytes_encoding_config = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
+    ptr += 1
+    encoding_configs = read_encoding_config(header_bytes[ptr:ptr + n_bytes_encoding_config])
+    ptr += n_bytes_encoding_config
+
+    acmax_scale_and_n_bytes = []
+    for i in range(3):
+        acmax_i = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
         ptr += 2
-        mu_i = int.from_bytes(header_bytes[ptr:ptr + 1], byteorder='big', signed=False)
-        ptr += 1
-        scale_i = struct.unpack_from("f", header_bytes, ptr)[0]
-        ptr += 4
-        q_scale_i = struct.unpack_from("f", header_bytes, ptr)[0]
-        ptr += 4
-        if i < get_num_levels(encoding_configs):
-            n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 3], byteorder='big', signed=False)
-            ptr += 3
-        else:
+        if i < 2: # net and arm
+            scale_i = struct.unpack_from("f", header_bytes, ptr)[0]
+            ptr += 4
             n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 2], byteorder='big', signed=False)
             ptr += 2
-        shape_mu_scale_and_n_bytes.append([shape_i, mu_i, scale_i, q_scale_i, n_bytes_i])
+        else: # encoding
+            scale_i = 0
+            n_bytes_i = int.from_bytes(header_bytes[ptr:ptr + 4], byteorder='big', signed=False)
+            ptr += 4
+        acmax_scale_and_n_bytes.append([acmax_i, scale_i, n_bytes_i])
 
     header: FrameHeader = {
         "n_bytes_header": n_bytes_header,
         "img_size": img_size,
+        "n_contexts": n_contexts,
         "encoding_configs": encoding_configs,
         "network_configs": network_configs,
-        "shape_mu_scale_and_n_bytes": shape_mu_scale_and_n_bytes
+        "arm_configs": arm_configs,
+        "acmax_scale_and_n_bytes": acmax_scale_and_n_bytes
     }
 
     print('\nContent of the frame header:')
